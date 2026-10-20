@@ -25,7 +25,7 @@ export class WechatPay {
     const keyMap=JSON.parse(this.env.WECHAT_PUBLIC_KEYS_JSON!);
     const publicKeyId=this.env.WECHAT_PUBLIC_KEY_ID||Object.keys(keyMap)[0];
     let response:Response;
-    try { response=await this.fetcher('https://api.mch.weixin.qq.com'+path,{method,headers:{Authorization:authorization,Accept:'application/json','Content-Type':'application/json','User-Agent':'BrclioPay/0.1','Wechatpay-Serial':publicKeyId},body:body||undefined,redirect:'error',signal:AbortSignal.timeout(8000)}); }
+    try { response=await this.fetcher('https://api.mch.weixin.qq.com'+path,{method,headers:{Authorization:authorization,Accept:'application/json','Content-Type':'application/json','User-Agent':'BrclioPay/0.1','Wechatpay-Serial':publicKeyId},body:body||undefined,redirect:'manual',signal:AbortSignal.timeout(8000)}); }
     catch { throw new HttpError(502,'WECHAT_UNAVAILABLE','微信支付网络暂时不可用，请稍后查单'); }
     const raw=await response.text();
     await this.verify(response.headers,raw);

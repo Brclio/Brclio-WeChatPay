@@ -4,11 +4,45 @@
 
 ## 1. 在支付中心登记产品
 
-推荐在 `https://paywc.bornforthis.cn/admin` 使用管理员邮箱/密码登录，新增产品并填写产品 ID、名称、固定 HTTPS Webhook、回跳来源、允许支付通道和商品价格。后台生成独立 API/Webhook 凭据，将完整产品配置加密保存到 GitHub `config/clients.json`。普通产品列表只显示掩码，不直接展示秘密。
+推荐在 `https://paywc.bornforthis.cn/admin` 使用管理员邮箱/密码登录，直接复制通用 AI 接入 Skill，交给已经获得当前产品工作区、源码和部署权限的 AI。无需先手工登记产品：Skill 预留一个 `p-<随机值>` 产品 ID，并附带有效期 24 小时、仅能登记和修改该产品的 Bearer 授权。AI 检查当前产品，沿用已确认的名称、商品价格、域名、订单及开通流程，通过接入 API 完成支付中心登记，再修改产品代码。已有支付宝等支付流程默认保留。流程详见 [AI 接入说明](ai-integration.md)。
 
-保存后选择该产品的一键复制 AI 接入 Skill，把生成的接入包交给负责该产品的受信任 AI 开发环境。Skill 包含当前产品的 ID、商品、域名、签名协议和本产品的服务端 API/Webhook 凭据；**整份接入包属于秘密**，只在授权产品的私有开发会话中使用，不发布、不提交到仓库、不贴入公开工单或截图。AI 应将凭据写入该产品后端的 Secret/已忽略环境文件，再完成待购订单、真实 Webhook 事务和用户权益开通。复制说明本身不表示已完成业务接入。接入包不包含商户私钥、APIv3 密钥、GitHub Token 或管理员凭据。
+也可手工在后台新增产品，填写名称、固定 HTTPS Webhook、回跳来源、允许支付通道和商品价格。后台生成独立 API/Webhook 凭据，将完整配置加密保存到 GitHub `config/clients.json`。普通产品列表只显示掩码。已有产品的一键复制专属 Skill 包含其真实目录、协议、服务端密钥与该产品的限时接入授权，便于 AI 同时更新支付中心配置和产品代码。
 
-后台可在收款关闭时注册产品。轮换凭据会使旧 API/Webhook 密钥立即失效，先协调产品部署及尚未成功投递的通知。当前没有自动双密钥过渡协议。
+**整份接入包属于秘密**，只在授权产品的私有开发会话中使用，不发布、不提交到仓库、不贴入公开工单或截图。AI 应将长期产品凭据写入该产品后端的 Secret/已忽略环境文件，再完成待购订单、真实 Webhook 事务和权益开通。复制说明不表示业务接入已完成。包内不包含商户私钥、APIv3 密钥、GitHub Token、管理员密码或目标产品的仓库/部署凭据；这些外部权限必须已由用户授权给目标 AI。
+
+后台可在收款关闭时注册产品。产品凭据轮换会使旧 API/Webhook 密钥及该产品旧接入授权失效，先协调产品部署及尚未成功投递的通知。当前没有自动双密钥过渡协议。限时授权到期后需重新登录后台复制，不应保存在产品运行时。
+
+### 限时接入 API
+
+以下接口供接入 Skill 中的 AI 使用，Header 为 `Authorization: Bearer <该产品的限时token>`；不使用产品下单 HMAC，也不能用来管理其他产品。
+
+| 接口 | 行为 |
+|---|---|
+| `GET /api/integration/clients/:id` | 读取当前授权产品；尚未登记时返回 404 |
+| `PUT /api/integration/clients/:id` | 创建或更新同一产品；正文只含名称、固定 Webhook、回跳来源、允许通道及商品目录 |
+| `GET /api/integration/clients/:id/skill` | 读取按最新配置生成的专属 Skill，包含真实 SKU 和该产品服务端凭据 |
+
+PUT 请求示意（值必须来自目标产品现有确认配置，不能照抄示例价格）：
+
+```json
+{
+  "name": "目标产品名称",
+  "webhookUrl": "https://product.brclio.com/api/payments/wechat/webhook",
+  "returnOrigins": ["https://product.brclio.com"],
+  "channels": ["native"],
+  "products": {
+    "YOUR_CONFIRMED_SKU": {
+      "description": "已确认的商品说明",
+      "amount": 100,
+      "maxQuantity": 1
+    }
+  }
+}
+```
+
+读取结果包括 `{client, credentials:{clientId,apiKey,webhookSecret}, channels, expiresAt}`，其中 `client` 是不直接展示秘密的配置。限时授权固定产品 ID，不能改 ID、访问其他产品、修改全局商户配置、轮换凭据或操作退款。长期产品 API 密钥只用于后续签名下单/查单，不能代替限时接入 token 管理目录。
+
+管理员登录会话使用 `GET /api/admin/bootstrap-skill` 取得通用包，结果为 `{filename:'SKILL.md', content, expiresAt}`；`GET /api/admin/clients/:id/skill` 为已有产品生成专属包。管理员 Cookie/密码不应交给目标 AI，也不需要目标 AI再登录管理后台。
 
 兼容原有部署的 `CLIENTS_JSON` 是可选后备配置，格式为以下对象的数组，作为 Cloudflare Secret 保存。后台同 ID 配置优先于后备配置；新产品无需编辑该变量。下面密钥均为占位符，不能直接启用；商品与价格需由商家确认后登记。
 
@@ -185,3 +219,5 @@ TIMESTAMP + "\n" + NONCE + "\n" + EXACT_RAW_JSON_BODY + "\n"
 ```
 
 密钥为该产品 `webhookSecret`。另有 `X-Brclio-Event`，必须等于正文 `eventId`，并等于 `payment.success.<orderId>`。使用恒定时间比较签名。每次重试时间戳、nonce 和签名会变化，稳定的 `eventId` 用于持久化去重。验签通过后还要校验时间、字段和待购订单，不能只检查签名。
+
+商品配置在 Worker 实例间可能需要约 15 秒传播。产品后端下单应携带可选 `expectedTotal`（该业务订单预期的人民币整数分金额），中心仅用它校验服务端目录价格，无法用该字段改变价格；不匹配返回 `409 CATALOG_PRICE_CHANGED` 且不创建订单，避免配置传播期间按错误价格付款。返回金额也应与产品业务订单核对后再展示收银台。

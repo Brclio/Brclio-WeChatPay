@@ -12,7 +12,8 @@
     "deploy": "npm run check && wrangler deploy",
     "secrets:generate": "node scripts/generate-secrets.mjs",
     "preflight": "node scripts/preflight.mjs",
-    "deploy:gateway": "wrangler pages deploy public --project-name brclio-wechatpay --branch main --cwd gateway"
+    "deploy:gateway": "wrangler pages deploy public --project-name brclio-wechatpay --branch main --cwd gateway",
+    "deploy:live": "npm run check && wrangler deploy --var PAYMENT_MODE:live --var PAYMENT_ENABLED:true"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261019.1",

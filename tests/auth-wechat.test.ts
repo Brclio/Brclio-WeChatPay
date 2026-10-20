@@ -128,3 +128,31 @@ test('live configuration rejects unusable key maps and storage key lengths befor
     assert.throws(() => assertLive({ ...baseline, ...override }), (error: unknown) => error instanceof HttpError && error.status === 503);
   }
 });
+
+test('default WeChat transport respects Workers fetch receiver and redirect constraints', async (t) => {
+  let requests = 0;
+  t.mock.method(globalThis, 'fetch', async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+    assert.equal(this, globalThis);
+    assert.equal(new URL(String(input)).origin, 'https://api.mch.weixin.qq.com');
+    assert.equal(init?.redirect, 'manual');
+    requests++;
+    return signedResponse(undefined, 204);
+  });
+  await new WechatPay(await merchantEnv()).close('a'.repeat(32));
+  assert.equal(requests, 1);
+});
+
+test('WeChat redirects fail closed and do not forward merchant authentication', async (t) => {
+  let requests = 0;
+  t.mock.method(globalThis, 'fetch', async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+    assert.equal(this, globalThis);
+    assert.equal(new URL(String(input)).origin, 'https://api.mch.weixin.qq.com');
+    assert.equal(init?.redirect, 'manual');
+    requests++;
+    const response = await signedResponse({}, 302);
+    response.headers.set('Location', 'https://untrusted.example/collect');
+    return response;
+  });
+  await assert.rejects(new WechatPay(await merchantEnv()).query('a'.repeat(32)), (error: unknown) => error instanceof WechatError);
+  assert.equal(requests, 1);
+});

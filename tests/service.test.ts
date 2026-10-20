@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { hmac } from '../src/crypto.js';
-import { PaymentService, orderPath, type OrderStore, type PaymentProvider } from '../src/service.js';
+import { PaymentService, orderPath, validateTransaction, type OrderStore, type PaymentProvider } from '../src/service.js';
 import { WechatError } from '../src/wechat.js';
 import { HttpError, type Client, type Env, type Order, type Payment, type WechatTransaction } from '../src/types.js';
 
@@ -262,4 +262,105 @@ test('H5 orders respect the five-minute payment-link lifetime and accept WeChat 
   assert.ok(lifetime <= 300050 && lifetime >= 299950);
   const paid = await service.applyTransaction(transaction(order, { trade_type: 'MWEB' }));
   assert.equal(paid.status, 'SUCCESS');
+});
+
+test('default fulfillment transport respects Workers fetch receiver and redirect constraints', async (t) => {
+  let notifications = 0;
+  t.mock.method(globalThis, 'fetch', async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+    assert.equal(this, globalThis);
+    assert.equal(String(input), client.webhookUrl);
+    assert.equal(init?.redirect, 'manual');
+    notifications++;
+    return new Response(null, { status: 204 });
+  });
+  const { store, provider } = fixture();
+  const service = new PaymentService(env, { store, provider });
+  const order = await service.create(client, input);
+  await service.applyTransaction(transaction(order));
+  assert.equal((await service.deliver(order.id)).delivery?.status, 'delivered');
+  assert.equal(notifications, 1);
+});
+
+test('fulfillment redirects remain pending and retain durable work for retry', async (t) => {
+  let notifications = 0;
+  t.mock.method(globalThis, 'fetch', async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+    assert.equal(this, globalThis);
+    assert.equal(String(input), client.webhookUrl);
+    assert.equal(init?.redirect, 'manual');
+    notifications++;
+    return new Response(null, { status: 302, headers: { Location: 'https://untrusted.example/collect' } });
+  });
+  const { store, provider } = fixture();
+  const service = new PaymentService(env, { store, provider });
+  const order = await service.create(client, input);
+  await service.applyTransaction(transaction(order));
+  assert.equal((await service.deliver(order.id)).delivery?.status, 'pending');
+  assert.equal(store.values.has(`work/${order.id}.json`), true);
+  assert.equal(notifications, 1);
+});
+
+test('real NOTPAY and CLOSED query shapes may omit amount and trade type without granting benefits', async () => {
+  let notifications = 0;
+  const { store, provider, service } = fixture((async () => { notifications++; return new Response(null, { status: 204 }); }) as typeof fetch);
+  const order = await service.create(client, input);
+  const unpaid = (state: 'NOTPAY' | 'CLOSED') => ({ appid: order.appId, attach: '', mchid: env.WECHAT_MCH_ID!, out_trade_no: order.id, payer: {}, promotion_detail: [], trade_state: state, trade_state_desc: state }) as unknown as WechatTransaction;
+  provider.onQuery = async () => unpaid(provider.closes ? 'CLOSED' : 'NOTPAY');
+  const pending = await service.refresh(order.id, true);
+  assert.equal(pending.status, 'PENDING');
+  assert.equal(pending.delivery, null);
+  await store.update<Order>(orderPath(order.id), (current) => ({ ...current!, expiresAt: new Date(Date.now() - 1000).toISOString() }));
+  const closed = await service.refresh(order.id, true);
+  assert.equal(closed.status, 'CLOSED');
+  assert.equal(closed.delivery, null);
+  assert.equal(closed.transactionId, undefined);
+  assert.equal(provider.closes, 1);
+  assert.equal(provider.queries, 3);
+  assert.deepEqual(await service.processWork(), { processed: 1, failed: 0 });
+  assert.equal(store.values.has(`work/${order.id}.json`), false);
+  assert.equal(notifications, 0);
+});
+
+test('nonpaid transactions retain strict identity and validate an amount whenever it is supplied', async () => {
+  const { service } = fixture();
+  const order = await service.create(client, input);
+  const base = { appid: order.appId, mchid: env.WECHAT_MCH_ID!, out_trade_no: order.id, trade_state: 'NOTPAY' as const } as WechatTransaction;
+  assert.doesNotThrow(() => validateTransaction(env, order, base));
+  assert.doesNotThrow(() => validateTransaction(env, order, { ...base, amount: { total: order.total } }));
+  for (const mismatch of [{ mchid: '1751349373' }, { appid: 'wx0000000000000000' }, { out_trade_no: 'f'.repeat(32) }, { trade_type: 'APP' }, { amount: { total: order.total + 1 } }, { amount: { total: order.total, currency: 'USD' } }]) {
+    assert.throws(() => validateTransaction(env, order, { ...base, ...mismatch }), (error: unknown) => error instanceof HttpError && error.code === 'TRANSACTION_MISMATCH');
+  }
+  assert.equal((await service.read(order.id)).status, 'PENDING');
+  assert.equal((await service.read(order.id)).delivery, null);
+});
+
+test('SUCCESS still requires the exact amount and explicit CNY currency before creating any entitlement delivery', async () => {
+  const { service } = fixture();
+  const order = await service.create(client, input);
+  for (const amount of [undefined, { total: order.total }, { total: order.total + 1, currency: 'CNY' }, { total: order.total, currency: 'USD' }]) {
+    await assert.rejects(service.applyTransaction(transaction(order, { amount })), (error: unknown) => error instanceof HttpError && error.code === 'TRANSACTION_MISMATCH');
+  }
+  assert.equal((await service.read(order.id)).status, 'PENDING');
+  assert.equal((await service.read(order.id)).delivery, null);
+});
+
+test('expectedTotal mismatches and invalid numeric values reject before order persistence or provider invocation', async () => {
+  const { store, provider, service } = fixture();
+  for (const expectedTotal of [1, 12901, '12900', null, 12900.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(service.create(client, { ...input, expectedTotal } as never), (error: unknown) => error instanceof HttpError && error.status === 409 && error.code === 'CATALOG_PRICE_CHANGED');
+  }
+  assert.equal(provider.creates, 0);
+  assert.equal(store.values.size, 0);
+  assert.deepEqual(store.events, []);
+});
+
+test('correct expectedTotal guards the catalog-derived quantity total without permitting a price override', async () => {
+  const { provider, service } = fixture();
+  const order = await service.create(client, { ...input, quantity: 2, expectedTotal: 25800 });
+  assert.equal(order.total, client.products.membership!.amount * 2);
+  assert.equal(provider.order!.total, 25800);
+  assert.equal((await service.create(client, { ...input, quantity: 2 })).id, order.id, 'The optional guard must not change business-order idempotency');
+  await assert.rejects(service.create(client, { ...input, quantity: 2, expectedTotal: 1 }), (error: unknown) => error instanceof HttpError && error.code === 'CATALOG_PRICE_CHANGED');
+  await assert.rejects(service.create(client, { ...input, quantity: 2, expectedTotal: 25800, amount: 1 } as never), (error: unknown) => error instanceof HttpError && error.code === 'ORDER_FIELDS_INVALID');
+  assert.equal(provider.creates, 1);
+  assert.equal((await service.read(order.id)).total, 25800);
 });

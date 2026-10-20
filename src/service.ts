@@ -13,7 +13,7 @@ export interface OrderStore {
   remove(path:string):Promise<void>;
 }
 export interface PaymentProvider { create(order:Order):Promise<Payment>; query(id:string):Promise<WechatTransaction>; close(id:string):Promise<void> }
-export interface CreateInput { merchantOrderId:string; sku:string; quantity?:number; channel:Channel; returnUrl?:string; payerOpenid?:string; clientIp?:string }
+export interface CreateInput { merchantOrderId:string; sku:string; quantity?:number; channel:Channel; returnUrl?:string; payerOpenid?:string; clientIp?:string; expectedTotal?:number }
 export const orderPath=(id:string)=>`orders/${id.slice(0,2)}/${id}.json`;
 const workPath=(id:string)=>`work/${id}.json`;
 export const validId=(id:string)=>/^[a-f0-9]{32}$/.test(id);
@@ -37,10 +37,11 @@ export class PaymentService {
   private validate(client:Client,input:CreateInput):{product:Client['products'][string];quantity:number;returnUrl?:string} {
     if (client.disabled) throw new HttpError(403,'CLIENT_DISABLED','该产品已暂停创建新订单');
     if (!input || typeof input!=='object' || typeof input.merchantOrderId!=='string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/.test(input.merchantOrderId) || typeof input.sku!=='string' || !Object.hasOwn(client.products,input.sku)) throw new HttpError(400,'ORDER_INVALID','商品或业务订单号不正确');
-    const allowedKeys=['merchantOrderId','sku','quantity','channel','returnUrl','payerOpenid','clientIp'];
+    const allowedKeys=['merchantOrderId','sku','quantity','channel','returnUrl','payerOpenid','clientIp','expectedTotal'];
     if (Object.keys(input).some(k=>!allowedKeys.includes(k))) throw new HttpError(400,'ORDER_FIELDS_INVALID','订单包含不支持的字段；价格由服务端商品配置确定');
     const product=client.products[input.sku],quantity=input.quantity??1;
     if (!Number.isInteger(quantity) || quantity<1 || quantity>(product.maxQuantity||1) || !Number.isSafeInteger(product.amount*quantity) || product.amount*quantity>100000000) throw new HttpError(400,'QUANTITY_INVALID','商品数量不正确');
+    if (input.expectedTotal!==undefined && (!Number.isSafeInteger(input.expectedTotal) || input.expectedTotal!==product.amount*quantity)) throw new HttpError(409,'CATALOG_PRICE_CHANGED','商品价格与业务订单预期不一致，请同步商品配置后重试');
     if (!client.channels.includes(input.channel) || !enabledChannels(this.env).includes(input.channel)) throw new HttpError(400,'CHANNEL_DISABLED','该产品尚未启用此支付方式');
     appIdFor(this.env,input.channel);
     let returnUrl:string|undefined;
@@ -161,7 +162,7 @@ export class PaymentService {
     const signature=await hmac(client.webhookSecret,`${timestamp}\n${lease}\n${body}\n`);
     let delivered=false;
     try {
-      const response=await this.fetcher(client.webhookUrl,{method:'POST',headers:{'Content-Type':'application/json','X-Brclio-Event':eventId,'X-Brclio-Timestamp':timestamp,'X-Brclio-Nonce':lease,'X-Brclio-Signature':signature},body,redirect:'error',signal:AbortSignal.timeout(8000)});
+      const response=await this.fetcher(client.webhookUrl,{method:'POST',headers:{'Content-Type':'application/json','X-Brclio-Event':eventId,'X-Brclio-Timestamp':timestamp,'X-Brclio-Nonce':lease,'X-Brclio-Signature':signature},body,redirect:'manual',signal:AbortSignal.timeout(8000)});
       delivered=response.ok;
       await response.body?.cancel();
     } catch { /* Timeout and non-2xx are retried through durable work. */ }
@@ -200,7 +201,12 @@ export class PaymentService {
   }
 }
 export function validateTransaction(env:Env,order:Order,tx:WechatTransaction):void {
-  if (tx.mchid!==env.WECHAT_MCH_ID || tx.appid!==order.appId || tx.out_trade_no!==order.id || !tx.amount || tx.amount.total!==order.total || tx.amount.currency!=='CNY' || (tx.trade_type && tx.trade_type!==(order.channel==='h5'?'MWEB':order.channel.toUpperCase()))) throw new HttpError(400,'TRANSACTION_MISMATCH','支付通知与订单不匹配');
+  const amountMismatch=tx.trade_state==='SUCCESS'
+    ? !tx.amount || tx.amount.total!==order.total || tx.amount.currency!=='CNY'
+    : tx.amount && (tx.amount.total!==order.total || (tx.amount.currency!==undefined && tx.amount.currency!=='CNY'));
+  // WeChat legitimately omits amount and trade_type when an order is unpaid/closed.
+  // Successful payments must always provide and match the exact amount and currency.
+  if (tx.mchid!==env.WECHAT_MCH_ID || tx.appid!==order.appId || tx.out_trade_no!==order.id || amountMismatch || (tx.trade_type && tx.trade_type!==(order.channel==='h5'?'MWEB':order.channel.toUpperCase()))) throw new HttpError(400,'TRANSACTION_MISMATCH','支付通知与订单不匹配');
   if (!['SUCCESS','REFUND','NOTPAY','CLOSED','REVOKED','USERPAYING','PAYERROR'].includes(tx.trade_state)) throw new HttpError(400,'TRANSACTION_INVALID','支付状态不正确');
   if (tx.trade_state==='SUCCESS' && (!/^\d{20,64}$/.test(tx.transaction_id||'') || !tx.success_time || !Number.isFinite(Date.parse(tx.success_time)))) throw new HttpError(400,'TRANSACTION_INVALID','支付流水信息不完整');
 }

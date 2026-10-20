@@ -34,8 +34,22 @@
     }
   }
   async function fetchSkill(clientId){const data=await api(`/clients/${encodeURIComponent(clientId)}/skill`);if(!data||typeof data.content!=='string'||!data.content.trim())throw new Error('接入 Skill 尚未生成，请稍后再试。');return {content:data.content,filename:typeof data.filename==='string'?data.filename:'SKILL.md'};}
-  function clearSkill(){skillText='';skillFilename='SKILL.md';$('skill-content').value='';feedback('skill-message','');}
-  function previewSkill(skill,message){skillText=skill.content;skillFilename=skill.filename;$('skill-content').value=skillText;feedback('skill-message',message||'');$('skill-dialog').showModal();}
+  function clearSkill(){skillText='';skillFilename='SKILL.md';$('skill-content').value='';$('skill-expiry').hidden=true;$('skill-expiry').textContent='';feedback('skill-message','');}
+  function expiryNote(expiresAt){const date=new Date(expiresAt);return Number.isFinite(date.getTime())?`授权截止：${new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(date)}（北京时间）。`:'';}
+  function previewSkill(skill,message){skillText=skill.content;skillFilename=skill.filename;$('skill-content').value=skillText;$('skill-dialog-title').textContent=skill.title||'产品接入 Skill';const expiry=expiryNote(skill.expiresAt);$('skill-expiry').textContent=expiry;$('skill-expiry').hidden=!expiry;feedback('skill-message',message||'');$('skill-dialog').showModal();}
+  async function copyBootstrapSkill(trigger){
+    if(!session)return;
+    trigger.disabled=true;feedback('workspace-message','正在生成这款产品专属的 24 小时接入授权…');
+    try{
+      const data=await api('/bootstrap-skill');
+      if(!session)return;
+      if(!data||typeof data.content!=='string'||!data.content.trim())throw new Error('自动接入 Skill 尚未生成，请稍后重试。');
+      const skill={content:data.content,filename:typeof data.filename==='string'?data.filename:'SKILL.md',expiresAt:data.expiresAt,title:'自动接入 Skill'};
+      try{await navigator.clipboard.writeText(skill.content);feedback('workspace-message',`自动接入 Skill 已复制。请交给已有项目代码与部署权限的 AI。${expiryNote(skill.expiresAt)}`,'success');}
+      catch{previewSkill(skill,'浏览器未允许自动复制。请使用下方复制或下载按钮，把 Skill 交给已有项目权限的 AI。');feedback('workspace-message','自动接入 Skill 已准备好，授权仅限一款产品。');}
+    }catch(error){if(session)feedback('workspace-message',error.message,'error');}
+    finally{trigger.disabled=false;}
+  }
   async function copyClientSkill(clientId,trigger){
     trigger.disabled=true;feedback('workspace-message','正在生成该产品的接入 Skill…');
     try{const skill=await fetchSkill(clientId);try{await navigator.clipboard.writeText(skill.content);feedback('workspace-message','接入 Skill 已复制。请交给有权限维护这款产品的开发助手；文件含该产品的服务端凭证。','success');}catch{previewSkill(skill,'浏览器未允许自动复制。点击下方复制按钮，或选中文本后复制。');feedback('workspace-message','接入 Skill 已准备好。');}}
@@ -70,7 +84,7 @@
   }
   $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(requestBusy)return;requestBusy=true;$('login-button').disabled=true;feedback('login-message','正在验证账号…');try{const data=await api('/login',{method:'POST',login:true,body:{email:$('login-email').value.trim(),password:$('login-password').value}});if(typeof data?.email!=='string'||typeof data?.csrfToken!=='string')throw new Error('会话响应异常，请重试。');session={email:data.email,csrfToken:data.csrfToken};showWorkspace();feedback('login-message','');await loadClients();}catch(error){feedback('login-message',error.name==='TimeoutError'?'连接超时，请稍后重试。':error.message,'error');}finally{requestBusy=false;$('login-button').disabled=false;}});
   $('logout-button').addEventListener('click',async()=>{$('logout-button').disabled=true;try{await api('/logout',{method:'POST',body:{}});showLogin();feedback('login-message','已安全退出。');}catch(error){if(session)feedback('workspace-message',error.message,'error');}finally{$('logout-button').disabled=false;}});
-  $('new-client-button').addEventListener('click',()=>openClient());$('empty-new-button').addEventListener('click',()=>openClient());$('add-sku-button').addEventListener('click',()=>{const row=addSku();row.querySelector('input').focus();});
+  $('bootstrap-skill-button').addEventListener('click',()=>copyBootstrapSkill($('bootstrap-skill-button')));$('empty-bootstrap-button').addEventListener('click',()=>copyBootstrapSkill($('empty-bootstrap-button')));$('new-client-button').addEventListener('click',()=>openClient());$('add-sku-button').addEventListener('click',()=>{const row=addSku();row.querySelector('input').focus();});
   for(const id of ['close-client-dialog','cancel-client-dialog'])$(id).addEventListener('click',()=>$('client-dialog').close());$('close-skill-dialog').addEventListener('click',()=>$('skill-dialog').close());$('skill-dialog').addEventListener('close',clearSkill);
   $('copy-skill-button').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(skillText);feedback('skill-message','接入 Skill 已复制。请仅交给有权限维护该产品的开发助手。','success');}catch{$('skill-content').focus();$('skill-content').select();feedback('skill-message','请使用系统复制快捷键复制已选中的 Skill。');}});$('download-skill-button').addEventListener('click',()=>{if(skillText)downloadSkill(skillText,skillFilename);});
   $('client-form').addEventListener('submit',async event=>{event.preventDefault();if(requestBusy)return;let payload;try{payload=collectClient();}catch(error){feedback('client-form-message',error.message,'error');return;}requestBusy=true;$('save-client-button').disabled=true;feedback('client-form-message','正在保存产品配置…');try{await api('/clients',{method:'POST',body:payload});$('client-dialog').close();feedback('workspace-message',`「${payload.name}」配置已保存。可复制接入 Skill，继续开发这款产品。`,'success');await loadClients();}catch(error){if(session)feedback('client-form-message',error.message,'error');}finally{requestBusy=false;$('save-client-button').disabled=false;}});

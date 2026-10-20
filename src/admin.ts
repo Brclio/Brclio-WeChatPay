@@ -1,6 +1,8 @@
 import { constantTimeEqual, hmac, randomHex, sha256 } from './crypto';
 import { baseUrl, enabledChannels } from './config';
 import { loadClients, maskedClient, saveClient } from './registry';
+import { issueIntegration } from './integration';
+import { bootstrapSkill } from './bootstrap-skill';
 import { integrationSkill } from './skill';
 import { HttpError, type Env } from './types';
 const cookieName='__Host-brclio-admin',localCookie='brclio-admin-dev';
@@ -67,6 +69,10 @@ export async function handleAdmin(request:Request,env:Env,readBody:()=>Promise<s
   }
   if (path==='/api/admin/session' && request.method==='GET') return json(current);
   if (path==='/api/admin/logout' && request.method==='POST') return json({ok:true},200,{'Set-Cookie':cookie(request,'',0)});
+  if (path==='/api/admin/bootstrap-skill' && request.method==='GET') {
+    const access=await issueIntegration(env);
+    return json({filename:'SKILL.md',content:bootstrapSkill(baseUrl(env),access.clientId,access.token,access.expiresAt),expiresAt:access.expiresAt});
+  }
   if (path==='/api/admin/clients' && request.method==='GET') return json({clients:(await loadClients(env)).map(maskedClient),channels:enabledChannels(env)});
   if (path==='/api/admin/clients' && request.method==='POST') {
     let input:any;try {input=JSON.parse(await readBody());}catch {throw new HttpError(400,'JSON_INVALID','产品配置不是有效 JSON');}
@@ -77,7 +83,7 @@ export async function handleAdmin(request:Request,env:Env,readBody:()=>Promise<s
   if (action) {
     const client=(await loadClients(env)).find(c=>c.id===action[1]);
     if (!client) throw new HttpError(404,'CLIENT_NOT_FOUND','未找到该产品');
-    if (request.method==='GET' && action[2]==='skill') return json({filename:'SKILL.md',content:integrationSkill(client,baseUrl(env))});
+    if (request.method==='GET' && action[2]==='skill') {const access=await issueIntegration(env,client);return json({filename:'SKILL.md',content:integrationSkill(client,baseUrl(env),access),expiresAt:access.expiresAt});}
     if (request.method==='GET' && action[2]==='credentials') return json({clientId:client.id,apiKey:client.apiKey,webhookSecret:client.webhookSecret});
     if (request.method==='POST' && action[2]==='rotate') return json({client:maskedClient(await saveClient(env,{id:client.id},true))});
   }

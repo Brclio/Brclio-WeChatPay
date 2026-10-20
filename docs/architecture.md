@@ -34,6 +34,10 @@ sequenceDiagram
 
 公网子域名先到 Pages Advanced mode 网关，再通过 Service binding 调用核心 Worker。网关转发原始请求且不持有商户秘密；核心 Worker 保留静态资源绑定与计划任务。阿里云保留权威 DNS，Pages 自定义子域名使用 CNAME。新增管理后台通过邮箱/密码、2 小时签名 Cookie、同源/CSRF 校验和登录限流保护；管理员可以在关闭真实付款时配置接入产品。
 
+管理员登录后可复制通用接入 Skill，预留一个随机产品 ID，并签发 24 小时的单产品接入授权。接入 AI 只能通过 Bearer token 读取/登记/更新该产品目录，不能操作其他产品、改 ID、轮换凭据、退款或修改商户级配置。已有产品的专属 Skill 也附带该产品限时授权及长期服务端密钥，便于 AI 同时适配中心登记与产品代码；产品凭据轮换会使旧授权失效。
+
+接入授权没有目标代码仓库、工作区或部署平台的访问能力，这些仍受用户在目标 AI 会话中的既有授权约束。普通产品运行时下单使用独立 HMAC API 密钥，不需要管理 Cookie或限时接入 token。复制的 Skill 是私有接入秘密，不能作为公开发布的通用 Skill 使用。
+
 支付中心对微信下单、查询结果和通知执行 RSA/SHA-256 验签，按可信公钥 ID 选择固定公钥，再解密通知并核对订单号、商户号、AppID、金额、CNY 币种及成功交易流水。`SUCCESS` 状态不被迟到的未付款消息回退。密钥不足、收款开关未启用或支付通道未批准时拒绝真实下单。[微信 APIv3 安全规则](https://pay.wechatpay.cn/doc/v3/merchant/4012365342)
 
 Cloudflare Workers WebCrypto 支持 SHA-256、RSASSA-PKCS1-v1_5 与 AES-GCM，本项目无需在 Worker 中运行 Java SDK、OpenSSL 子进程或 Node 文件系统。[Cloudflare Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/)

@@ -4,7 +4,7 @@ export interface Product { description: string; amount: number; maxQuantity?: nu
 export interface Client {
   id: string; name: string; apiKey: string; webhookSecret: string;
   webhookUrl: string; returnOrigins: string[]; channels: Channel[];
-  products: Record<string, Product>; disabled?: boolean; lastUpdated?: string;
+  products: Record<string, Product>; disabled?: boolean; lastUpdated?: string; integrationBootstrapHash?: string;
 }
 export interface Env {
   ASSETS: Fetcher; AUTH_RATE_LIMITER?: RateLimit;

@@ -177,3 +177,30 @@ test('arbitrary URLs, path traversal, and special path characters are rejected b
   }
   assert.equal(fake.calls.length, 0);
 });
+
+test('default storage transport respects Workers fetch receiver and redirect constraints', async (t) => {
+  const fake = new FakeGithub();
+  t.mock.method(globalThis, 'fetch', async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+    // workerd rejects borrowed global methods and redirect:"error" before network I/O.
+    assert.equal(this, globalThis);
+    assert.equal(init?.redirect, 'manual');
+    return fake.fetcher(input, init);
+  });
+  const store = new GithubStore({ token: 'fixture-credential', repo, encryptionKey });
+  assert.equal(await store.create('orders/transport.json', { amount: 1 }), true);
+  assert.deepEqual((await store.read('orders/transport.json'))?.value, { amount: 1 });
+});
+
+test('storage redirects fail closed and never follow the redirected credential destination', async (t) => {
+  let requests = 0;
+  t.mock.method(globalThis, 'fetch', async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+    assert.equal(this, globalThis);
+    assert.equal(new URL(String(input)).origin, 'https://api.github.com');
+    assert.equal(init?.redirect, 'manual');
+    requests++;
+    return new Response(null, { status: 302, headers: { Location: 'https://untrusted.example/collect' } });
+  });
+  const store = new GithubStore({ token: 'fixture-credential', repo, encryptionKey });
+  await assert.rejects(store.inspect(), code('GITHUB_REQUEST_FAILED'));
+  assert.equal(requests, 1);
+});

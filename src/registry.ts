@@ -26,10 +26,10 @@ export async function runtimeEnv(env:Env):Promise<Env> {
   catch(error) {runtimeCache=undefined;throw error;}
 }
 export function maskedClient(c:Client):Record<string,unknown> {
-  const {apiKey,webhookSecret,...rest}=c;
+  const {apiKey,webhookSecret,integrationBootstrapHash,...rest}=c;
   return {...rest,maskedKey:apiKey.slice(0,4)+'••••••••'+apiKey.slice(-4)};
 }
-export async function saveClient(env:Env,input:Record<string,unknown>,rotate=false):Promise<Client> {
+export async function saveClient(env:Env,input:Record<string,unknown>,rotate=false,guard?:{bootstrapHash?:string;expectedApiKey?:string}):Promise<Client> {
   if (typeof input.id!=='string' || !/^[a-z0-9][a-z0-9_-]{1,63}$/.test(input.id)) throw new HttpError(400,'CLIENT_ID_INVALID','产品 ID 须为 2 至 64 位小写字母、数字、下划线或连字符');
   const store=configStore(env), baseline=await loadClients(env),key=randomHex(32),hookKey=randomHex(32);
   let result:Client|undefined;
@@ -38,8 +38,17 @@ export async function saveClient(env:Env,input:Record<string,unknown>,rotate=fal
     for (const saved of current?.clients||[]) merged.set(saved.id,saved);
     const list=[...merged.values()];
     const existing=list.find(c=>c.id===input.id);
+    if (guard?.bootstrapHash && existing && existing.integrationBootstrapHash!==guard.bootstrapHash) throw new HttpError(403,'INTEGRATION_REVOKED','此授权不能修改现有产品');
+    if (guard?.expectedApiKey && (!existing || existing.apiKey!==guard.expectedApiKey)) throw new HttpError(403,'INTEGRATION_REVOKED','接入授权已在配置更新期间撤销');
     if (rotate && !existing) throw new HttpError(404,'CLIENT_NOT_FOUND','未找到该产品');
-    const candidate=(rotate?{...existing,apiKey:key,webhookSecret:hookKey}:{id:input.id,name:input.name,webhookUrl:input.webhookUrl,returnOrigins:input.returnOrigins,channels:input.channels,products:input.products,disabled:input.disabled===true,apiKey:existing?.apiKey||key,webhookSecret:existing?.webhookSecret||hookKey}) as Client;
+    const editable=guard?{...existing,...input}:input;
+    if (guard && Object.hasOwn(input,'products')) {
+      if (!input.products || typeof input.products!=='object' || Array.isArray(input.products)) throw new HttpError(400,'CLIENT_CONFIG_INVALID','商品目录必须是对象');
+      editable.products={...existing?.products,...input.products};
+    }
+    const candidate=(rotate?{...existing,apiKey:key,webhookSecret:hookKey}:{id:input.id,name:editable.name,webhookUrl:editable.webhookUrl,returnOrigins:editable.returnOrigins,channels:editable.channels,products:editable.products,disabled:guard?existing?.disabled||false:input.disabled===undefined?existing?.disabled||false:input.disabled===true,apiKey:existing?.apiKey||key,webhookSecret:existing?.webhookSecret||hookKey}) as Client;
+    if (rotate) delete candidate.integrationBootstrapHash;
+    else if (existing?.integrationBootstrapHash || guard?.bootstrapHash) candidate.integrationBootstrapHash=existing?.integrationBootstrapHash||guard?.bootstrapHash;
     candidate.lastUpdated=new Date().toISOString();
     try { validateClients({...env,CLIENTS_JSON:JSON.stringify([candidate])}); }
     catch { throw new HttpError(400,'CLIENT_CONFIG_INVALID','请检查名称、HTTPS 回调地址、返回域名、支付方式和商品价格（整数分）'); }

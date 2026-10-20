@@ -199,7 +199,7 @@ export class GithubStore {
           headers: { Authorization: `Bearer ${this.token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'Brclio-WeChatPay', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           signal: controller.signal,
-          redirect: 'error',
+          redirect: 'manual',
         });
         if (!response.ok) {
           // Upstream messages can contain repository names and request metadata.

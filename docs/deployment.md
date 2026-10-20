@@ -1,6 +1,6 @@
 # 部署与商户配置
 
-本文件是待执行的部署说明，不是已发布或已验证收款的证明。公网域名、证书/密钥、真实商品与产品 Webhook 未齐全时，保持真实收款关闭。
+本文件是部署与维护操作说明。当前 `paywc.bornforthis.cn` 已接通并部署，线上启用 Native；已验证预支付及未付款查询/关单，没有执行扣款。实际部署记录见 [发布状态](release-status.md)，首个产品的真实付款通知与权益开通仍待验收。
 
 ## 域名方案
 
@@ -31,7 +31,7 @@ export default {
 
 Pages 配置不使用 Workers 的 `main` 字段。Service binding 必须指向同账户已部署的核心 Worker，改绑定后重新发布网关；保留原始请求正文、路径和签名 Header。`PUBLIC_BASE_URL` 使用最终收银台域名。Pages 网关不复制商户密钥，也不增加任何数据库存储。[Pages Service bindings](https://developers.cloudflare.com/pages/functions/bindings/)、[Advanced mode](https://developers.cloudflare.com/pages/functions/advanced-mode/)、[Wrangler 配置](https://developers.cloudflare.com/pages/functions/wrangler-configuration/)
 
-域名有旧 CNAME/A/AAAA 时先核实用途，不能直接覆盖既有业务。此方案不需要为本项目购买 Cloudflare Partial DNS 套餐，也不需要修改整域 NS。页面和 API 的真实访问、微信回调链路及网关 Service binding 均须部署后验收，本文不把方案存在视为已经配置完成。
+未来修改域名时，若有旧 CNAME/A/AAAA 应先核实用途，不能直接覆盖既有业务。当前方案保留阿里云权威 DNS，无需 Cloudflare Partial DNS 套餐或整域 NS 迁移。页面和 API 可达性、微信真实支付通知及产品权益开通应分别验收；域名激活不代表真实付款验收已通过。
 
 ## 微信商户平台需要提供的参数
 
@@ -110,7 +110,15 @@ npx wrangler secret bulk secrets/cloudflare.json
 
 然后依据 `gateway/` 中的独立 Pages 配置发布网关，在 Pages 登记 `paywc.bornforthis.cn`，按项目生成的准确目标在阿里云添加 CNAME。核心 Worker 先部署并保持收款关闭，再发布网关与绑定；Service binding 目标不得使用临时预览实例。核心 Worker 的 cron 继续负责查单/补投，Pages 网关无需复制计划任务。
 
-首次部署保持收款关闭。上传 Secret 后，核对密钥名称及公有配置；不要通过 tail 原始请求、环境打印或截图确认秘密。管理员登录 `/admin`，登记真实产品、价格、回调及返回域名，再把每个产品专属 Skill 和安全凭据交给对应产品的开发环境。上面的命令是操作说明，并未在本文中执行。修改 `PAYMENT_MODE=live` 与 `PAYMENT_ENABLED=true` 是最终启用收款步骤，需要在配置和端到端接入就绪后进行。
+首次部署保持收款关闭。上传 Secret 后，核对密钥名称及公有配置；不要通过 tail 原始请求、环境打印或截图确认秘密。管理员登录 `/admin` 后可直接复制通用 Skill，由已经获得产品仓库及部署权限的 AI 通过单产品限时接口登记真实目录、回调与返回域名，并接好产品代码；也可手工登记后复制专属 Skill。[AI 接入说明](ai-integration.md)
+
+正式部署使用：
+
+```sh
+npm run deploy:live
+```
+
+该命令运行检查，并通过 CLI 明确设置 `PAYMENT_MODE=live`、`PAYMENT_ENABLED=true`。仓库中的默认值仍是 demo/false，普通 `npm run deploy` 会按默认值部署，不能用它无意覆盖正在运行的正式模式。部署命令成功只证明对应版本发布，真实付款及产品开通证据单独记录。
 
 ## 上线验收与停用
 
@@ -124,3 +132,9 @@ npx wrangler secret bulk secrets/cloudflare.json
 6. 重放同一事件、重复点击、Webhook 暂时失败、查询补偿及进程重启场景均不重复开通。浏览器回跳与 Android SDK 回调不直接开通。
 
 若需紧急停用，先将 `PAYMENT_ENABLED=false` 发布生效。停用后的已支付订单仍需依据微信商户平台和保存的订单记录对账处理；关闭下单不能替代退款或对账。恢复前修复配置并确认未投递通知，不能仅凭页面恢复可访问就宣称收款恢复。
+
+## 本仓库当前线上维护命令
+
+线上 Native 已按发布记录单独启用。更新线上服务使用 `npm run deploy:live`，该命令显式设置 live/启用标志并执行检查；普通 `npm run deploy` 保持仓库默认的演示/关闭配置。Pages 入口更新使用 `npm run deploy:gateway`，其工作目录为 `gateway/`。
+
+若要用本地密钥文件核验线上同等模式，可执行 `PAYMENT_MODE=live PAYMENT_ENABLED=true npm run preflight -- --certificate secrets/apiclient_cert.pem`；尚未登记真实产品时，REGISTERED_PRODUCTS 检查仍会失败，需先通过管理台 Skill 为首个产品完成接入。最终上线证据见 [发布记录](release-status.md)。

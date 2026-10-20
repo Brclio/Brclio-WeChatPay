@@ -1,3 +1,4 @@
+import { handleIntegration } from './integration';
 import { handleAdmin } from './admin';
 import { runtimeEnv } from './registry';
 import { authenticate, verifyCheckout } from './auth';
@@ -21,7 +22,7 @@ function responseHeaders(request:Request,response:Response,env:Env):Response {
   const origin=request.headers.get('Origin');
   if (origin && allowedOrigin(origin,env)) {
     headers.set('Access-Control-Allow-Origin',origin);headers.set('Vary','Origin');
-    headers.set('Access-Control-Allow-Methods','GET, POST, OPTIONS');
+    headers.set('Access-Control-Allow-Methods','GET, POST, PUT, OPTIONS');
     headers.set('Access-Control-Allow-Headers','Authorization, Content-Type, X-Brclio-CSRF, X-Brclio-Client, X-Brclio-Timestamp, X-Brclio-Nonce, X-Brclio-Signature');
     headers.set('Access-Control-Max-Age','600');
   }
@@ -56,9 +57,10 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const origin=request.headers.get('Origin');
     if (origin && origin!==url.origin && !allowedOrigin(origin,env) && url.hostname!=='localhost' && url.hostname!=='127.0.0.1') throw new HttpError(403,'ORIGIN_DENIED','此来源未登记');
     if (request.method==='OPTIONS') return new Response(null,{status:204});
+    if (path.startsWith('/api/integration/')) return handleIntegration(request,env,()=>bodyText(request));
     if (path.startsWith('/api/admin/')) return handleAdmin(request,env,()=>bodyText(request));
     if (path==='/api/health' && request.method==='GET') {
-      let configured=false;try { if (env.PAYMENT_MODE==='live' && env.PAYMENT_ENABLED==='true') {env=await runtimeEnv(env);assertLive(env);configured=true;} } catch { /* Safe public readiness only. */ }
+      let configured=false;try { assertLive(env,false);configured=true; } catch { /* Safe public readiness only. */ }
       return json({service:'brclio-pay',mode:env.PAYMENT_MODE==='live'?'live':'demo',configured,channels:configured?enabledChannels(env):[]});
     }
     if (env.PAYMENT_MODE!=='live' || env.PAYMENT_ENABLED!=='true') throw new HttpError(503,'PAYMENTS_DISABLED','收款尚未启用，请等待商户配置完成');
@@ -130,7 +132,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   const asset=await env.ASSETS.fetch(new Request(target,request));
   if (asset.status===404) return new Response('页面不存在',{status:404,headers:{'Content-Type':'text/plain; charset=utf-8'}});
   const headers=new Headers(asset.headers);
-  headers.set('Cache-Control',assetPath.endsWith('.html')?'no-store':'public, max-age=3600');
+  headers.set('Cache-Control',assetPath.endsWith('.html')?'no-store':'public, max-age=0, must-revalidate');
   return new Response(asset.body,{status:asset.status,headers});
 }
 export default {
