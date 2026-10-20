@@ -1,0 +1,31 @@
+{
+  "name": "brclio-wechatpay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && wrangler dev",
+    "build": "esbuild node_modules/qrcode/lib/browser.js --bundle --minify --format=iife --global-name=QRCodeLib --outfile=public/vendor/qrcode.js",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts tests/*.test.mjs",
+    "check": "npm run typecheck && npm test && npm run build && wrangler deploy --dry-run",
+    "deploy": "npm run check && wrangler deploy",
+    "secrets:generate": "node scripts/generate-secrets.mjs",
+    "preflight": "node scripts/preflight.mjs",
+    "deploy:gateway": "wrangler pages deploy public --project-name brclio-wechatpay --branch main --cwd gateway"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261019.1",
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.151.3"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

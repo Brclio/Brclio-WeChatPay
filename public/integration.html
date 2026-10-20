@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light"><meta name="description" content="Brclio Pay 服务端接入指南：创建订单、验证支付通知与幂等开通产品权益。"><title>开发者接入 · Brclio Pay</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<a class="skip-link" href="#main">跳到接入文档</a><header class="app-header"><a class="brand" href="/" aria-label="Brclio Pay 首页"><span class="brand-mark" aria-hidden="true">b<span>·</span></span><span class="brand-word">Brclio <em>Pay</em></span></a><div class="header-actions"><a class="header-link" href="/checkout/demo">收银台预览 ↗</a><a class="header-link" href="/">返回支付中心 →</a></div></header>
+<main class="guide-main" id="main"><div class="guide-heading"><div><p class="eyebrow">DEVELOPER GUIDE / V1</p><h1>把支付，接进你的产品。</h1><p>产品负责订单与权益，Brclio Pay 负责与微信支付交互。通过服务端创建订单、核验通知，让网页和客户端共享同一条支付链路。</p></div><div class="guide-meta">服务基址以正式部署域名为准。<br>建议：paywc.bornforthis.cn<br>微信支付专属域名，保留现有支付宝服务。</div></div><div class="guide-grid"><nav class="guide-toc" aria-label="文档目录"><a href="#flow">01　接入流程</a><a href="#channels">02　支付场景</a><a href="#create">03　创建订单</a><a href="#signature">04　接口签名</a><a href="#webhook">05　付款通知</a><a href="#readiness">06　上线准备</a></nav><div class="guide-content">
+<section class="guide-section" id="flow"><h2>01　从下单到开通</h2><ol class="guide-list"><li>为产品分配独立的 <code>clientId</code>、接口密钥和通知密钥，在支付服务端配置商品目录、允许的返回地址和通知地址。</li><li>用户点击购买，产品后端校验登录状态与商品，生成唯一的 <code>merchantOrderId</code>，向支付服务创建订单。</li><li>网页或客户端打开接口返回的 <code>checkoutUrl</code>。收银台凭证位于 URL 片段中，不会作为请求地址发给服务器。</li><li>微信确认付款后，支付服务验证通知与金额，向产品后端发送带签名的付款事件。产品核验并去重后开通权益。</li><li>用户返回产品时，产品后端查询订单复核，再展示自己的开通结果。</li></ol><div class="guide-note">浏览器返回、客户端提示成功和 <code>returnUrl</code> 跳转，都不能单独作为到账凭据。产品权益只能依据服务端核验过的付款状态开通。</div></section>
+<section class="guide-section" id="channels"><h2>02　按场景启用支付渠道</h2><p>渠道必须同时满足商户权限、AppID 类型和支付参数要求。未开通的渠道应保持禁用。产品已有的支付宝及其他支付方式应继续保留，微信支付按新渠道接入。</p><div class="guide-table-wrap"><table class="guide-table"><thead><tr><th>场景</th><th>渠道</th><th>接入条件</th></tr></thead><tbody><tr><td>电脑网页 / 桌面客户端</td><td>Native 扫码</td><td>商户开通 Native，关联有效 AppID，用户用微信扫码。</td></tr><tr><td>微信小程序</td><td>JSAPI</td><td>关联的小程序 AppID 与对应用户 OpenID；在小程序内调用 wx.requestPayment。</td></tr><tr><td>微信内网页</td><td>JSAPI</td><td>需公众号 AppID、网页授权、对应 OpenID 和支付授权目录。小程序 AppID 不能直接代替公众号网页配置。</td></tr><tr><td>手机外部浏览器</td><td>H5</td><td>需额外开通 H5 支付并配置支付域名；当前接入前先核实开通状态。</td></tr><tr><td>安卓原生应用</td><td>APP</td><td>需额外开通 APP 支付、绑定移动应用 AppID，并集成微信 SDK。</td></tr></tbody></table></div><p>客户端统一通过自己的服务端下单。接口密钥与微信商户私钥均不得打包进网页、APK 或桌面应用。</p></section>
+<section class="guide-section" id="create"><h2>03　创建与查询订单</h2><h3>POST /api/v1/orders</h3><p>接口请求须带服务端签名。请求商品编码，金额以服务端商品目录为准；客户端不能自定付款金额。</p><pre><code>{
+  "merchantOrderId": "your_unique_order_id",
+  "sku": "your_product_sku",
+  "quantity": 1,
+  "channel": "native",
+  "returnUrl": "https://your-product.brclio.com/billing/result"
+}</code></pre><p>返回值包含订单 <code>id</code>、<code>status</code> 与 <code>checkoutUrl</code>。相同业务订单应复用同一个 <code>merchantOrderId</code>，避免网络重试生成重复订单。</p><p>查询：<code>GET /api/v1/orders/:id</code>；主动向微信核对：<code>POST /api/v1/orders/:id/refresh</code>。这两个接口同样需要签名，只能访问本产品自己的订单。</p><p>JSAPI 额外传入与该 AppID 对应的 <code>payerOpenid</code>；H5 额外传入由可信服务端获取的 <code>clientIp</code>。不要直接信任浏览器提交的代理请求头。</p></section>
+<section class="guide-section" id="signature"><h2>04　每次请求使用独立签名</h2><p>签名只在产品后端生成。时间戳使用 Unix 秒，nonce 使用安全随机值。参与签名的请求路径和原始 JSON 字符串必须与发送的字节完全一致，末尾保留换行。</p><pre><code>METHOD + "\n" +
+pathnameAndQuery + "\n" +
+timestamp + "\n" +
+nonce + "\n" +
+rawBody + "\n"
+
+signature = HMAC_SHA256(apiKey, message).hex()</code></pre><p>发送以下请求头；GET 请求的 <code>rawBody</code> 为空字符串。</p><pre><code>X-Brclio-Client: your_client_id
+X-Brclio-Timestamp: unix_seconds
+X-Brclio-Nonce: secure_random_hex
+X-Brclio-Signature: lowercase_hex_hmac</code></pre><h3>Node.js 服务端示例</h3><pre><code>import { createHmac, randomBytes } from 'node:crypto';
+
+const path = '/api/v1/orders';
+const timestamp = String(Math.floor(Date.now() / 1000));
+const nonce = randomBytes(16).toString('hex');
+const body = JSON.stringify({
+  merchantOrderId: 'your_unique_order_id',
+  sku: 'your_product_sku',
+  channel: 'native'
+});
+const message = `POST\n${path}\n${timestamp}\n${nonce}\n${body}\n`;
+const signature = createHmac('sha256', process.env.PAY_API_KEY)
+  .update(message).digest('hex');
+const response = await fetch(`${process.env.PAY_BASE_URL}${path}`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Brclio-Client': process.env.PAY_CLIENT_ID,
+    'X-Brclio-Timestamp': timestamp,
+    'X-Brclio-Nonce': nonce,
+    'X-Brclio-Signature': signature
+  },
+  body
+});
+if (!response.ok) throw new Error('Payment order creation failed');
+const order = await response.json();
+// Return only the necessary checkout information to your client.</code></pre></section>
+<section class="guide-section" id="webhook"><h2>05　验签、去重，再开通</h2><p>支付事件发送到产品配置的 HTTPS 通知地址。先保留原始请求体字节并核验签名，通过后再解析 JSON。使用独立的通知密钥 <code>webhookSecret</code>，以常量时间比较函数核对签名，并检查时间戳有效期。</p><pre><code>message = timestamp + "\n" + nonce + "\n" + rawBody + "\n"
+signature = HMAC_SHA256(webhookSecret, message).hex()
+
+X-Brclio-Event: payment.success.&lt;orderId&gt;
+X-Brclio-Timestamp: unix_seconds
+X-Brclio-Nonce: secure_random_hex
+X-Brclio-Signature: lowercase_hex_hmac</code></pre><p>通知载荷包含 <code>eventId</code>、<code>orderId</code>、<code>clientId</code>、<code>merchantOrderId</code>、<code>sku</code>、<code>quantity</code>、<code>total</code>、<code>currency</code>、<code>transactionId</code> 和 <code>paidAt</code>。</p><ul class="guide-list"><li>核对 <code>clientId</code>、业务订单归属、SKU、数量、金额与币种，确保与产品自己的订单一致。</li><li>使用稳定的 <code>eventId</code> 幂等处理。相同付款通知可能重复到达，不能重复发放权益。</li><li>建议再通过带签名的查询接口复核付款状态；把权益开通与事件去重放在同一个可靠事务中。</li><li>持久化处理结果后再返回 HTTP 2xx；处理失败返回非 2xx，让支付服务稍后重试。</li></ul><div class="guide-note">跳转地址用于带用户回到产品。付款事件用于通知后端。两者承担不同职责，产品即使没有等到浏览器返回，也应能正确开通。</div></section>
+<section class="guide-section" id="readiness"><h2>06　正式收款前的准备</h2><ul class="guide-list"><li>在 Cloudflare 为支付服务绑定 HTTPS 域名，例如 <code>paywc.bornforthis.cn</code>，将服务基址写入配置。</li><li>完成微信商户号、有效 AppID、商户 API 私钥、证书序列号、API v3 密钥与微信支付公钥配置。敏感配置仅通过 Cloudflare Secrets 管理。</li><li>核实 Native / JSAPI / H5 / APP 的实际开通状态，按场景完成关联、支付授权目录与域名配置。</li><li>为每个产品设置独立接口与通知密钥、商品目录、通知地址和允许的返回地址。</li><li>配置专用 GitHub 私有数据仓库的最小权限访问。高并发收款前，应评估 GitHub API 写入与限流边界。</li><li>完成真实小额付款、微信通知验签、主动查询、重复通知、权益去重和产品返回页验证。</li></ul><p>支付中心的状态来自 <code>GET /api/health</code>。显示已配置，只代表服务端配置检查通过；正式上线仍应以真实支付验证结果为准。</p></section>
+</div></div><footer class="page-footer"><span>© Brclio <span class="footer-divider">/</span> Stay curious. Keep building.</span><a href="/">返回支付中心 →</a></footer></main></body></html>

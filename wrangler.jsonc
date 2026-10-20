@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "brclio-wechatpay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none"
+  },
+  "vars": {
+    "PAYMENT_MODE": "demo",
+    "PAYMENT_ENABLED": "false",
+    "PUBLIC_BASE_URL": "https://paywc.bornforthis.cn",
+    "GITHUB_DATA_REPO": "BrclioData/Brclio-WeChatPay-Data",
+    "GITHUB_DATA_BRANCH": "main",
+    "WECHAT_MCH_ID": "1751349372",
+    "WECHAT_APP_ID": "wx59aa532fbf6fa540",
+    "ENABLED_CHANNELS": "native",
+    "ALLOWED_ORIGINS": "https://brclio.com,https://*.brclio.com",
+    "ORDER_TTL_MINUTES": "15"
+  },
+  "ratelimits": [{"name":"AUTH_RATE_LIMITER","namespace_id":"1001","simple":{"limit":5,"period":60}}],
+  "triggers": { "crons": ["*/10 * * * *"] },
+  "observability": { "enabled": false }
+}

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Brclio 统一支付服务，将微信支付与每个产品连接起来。">
+  <title>Brclio Pay · 支付中心</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/home.js" defer></script>
+</head>
+<body>
+  <!-- Adapted from Brclio Design System / assets/template-app.html. -->
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Brclio Pay 首页"><span class="brand-mark" aria-hidden="true">b<span>·</span></span><span class="brand-word">Brclio <em>Pay</em></span></a>
+    <div class="header-actions"><span class="service-badge" id="service-badge"><span class="status-dot"></span><span id="service-label">正在检查服务</span></span><a class="header-link" href="/admin">产品管理 <span aria-hidden="true">↗</span></a></div>
+  </header>
+  <div class="app-shell">
+    <aside class="app-sidebar" aria-label="支付中心导航">
+      <div class="sidebar-heading">工作空间 <span>01</span></div>
+      <nav class="side-nav">
+        <a class="side-link active" href="/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>服务总览</a>
+        <a class="side-link" href="/checkout/demo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18l-3-2-4 2-4-2-3 2Z"/><path d="M9 8h6M9 12h6"/></svg>收银台预览<span class="small-tag">演示</span></a>
+        <a class="side-link" href="/integration.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-12-2 18"/></svg>开发者接入</a>
+      </nav>
+      <div class="sidebar-note"><span class="tiny-label">BUILT FOR BRCLIO</span><p>写代码，教编程，<br>做产品。</p><span class="note-scribble" aria-hidden="true">keep building ↗</span></div>
+      <a class="sidebar-footer" href="https://bornforthis.cn" rel="noopener">bornforthis.cn <span aria-hidden="true">↗</span></a>
+    </aside>
+    <main class="app-main" id="main">
+      <div class="page-top"><div><p class="eyebrow">PAYMENT WORKSPACE</p><h1>支付中心</h1></div><span class="page-caption">每一笔支付，都有回音。</span></div>
+      <section class="overview-panel" aria-labelledby="overview-title">
+        <div class="overview-copy"><span class="card-pill">Brclio 统一支付</span><h2 id="overview-title">一处收款，<br>连接<span class="highlight">每个产品。</span></h2><p>从网页到客户端，让付款自然接上产品体验。<br class="desktop-break">统一下单、确认结果，再回到原来的旅程。</p><div class="button-row"><a class="button button-primary" href="/checkout/demo">预览收银台 <span aria-hidden="true">↗</span></a><a class="text-link" href="/integration.html">查看接入指南 <span aria-hidden="true">→</span></a></div><p class="quiet-note">预览仅展示界面，不创建订单、不发起扣款。</p></div>
+        <div class="receipt-illustration" aria-label="支付流程示意">
+          <span class="receipt-pin" aria-hidden="true"></span>
+          <div class="mini-receipt"><div class="receipt-brand">Brclio <em>Pay</em><span>↗</span></div><div class="receipt-rule"></div><p class="receipt-eyebrow">ONE PAYMENT, EVERY PRODUCT</p><div class="receipt-flow"><span><i>01</i>产品创建订单</span><span><i>02</i>用户完成付款</span><span><i>03</i>结果送回产品</span></div><div class="receipt-rule dashed"></div><div class="receipt-bottom"><span>连接已发生。<small>LET GOOD THINGS CONTINUE.</small></span><svg viewBox="0 0 40 40" aria-hidden="true"><path d="m9 21 7 7L31 12"/></svg></div></div>
+          <span class="receipt-caption">a little bridge, a lot of possibilities.</span>
+        </div>
+      </section>
+      <section class="service-section" aria-labelledby="service-title"><div class="section-heading"><h2 id="service-title">支付服务状态</h2><span class="tiny-label">SERVICE / LIVE CHECK</span></div><div class="service-strip"><div class="service-emblem" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-6"/></svg></div><div class="service-description"><h3 id="health-title">正在读取服务配置</h3><p id="health-detail">服务状态将以服务器返回的实时结果为准。</p></div><a class="text-link" href="/integration.html#readiness">上线准备 <span aria-hidden="true">→</span></a></div></section>
+      <section class="channels-section" aria-labelledby="channels-title"><div class="section-heading"><h2 id="channels-title">从哪里开始付款？</h2><span class="subtle">同一套接口，适配不同场景</span></div><div class="tab-bar" role="tablist" aria-label="支付场景"><button class="tab active" role="tab" id="tab-desktop" aria-controls="channel-panel" aria-selected="true" data-channel="desktop">电脑网页</button><button class="tab" role="tab" id="tab-mobile" aria-controls="channel-panel" aria-selected="false" tabindex="-1" data-channel="mobile">手机浏览器</button><button class="tab" role="tab" id="tab-client" aria-controls="channel-panel" aria-selected="false" tabindex="-1" data-channel="client">安卓与桌面客户端</button></div><div class="channel-panel" id="channel-panel" role="tabpanel" aria-labelledby="tab-desktop" tabindex="0"><div class="channel-device" id="channel-icon" aria-hidden="true"><svg viewBox="0 0 72 64"><rect x="7" y="6" width="58" height="40" rx="4"/><path d="M27 57h18M36 46v11"/><path d="M26 19h7v7h-7zm14 0h7v7h-7zM26 33h7m7 0h7"/></svg></div><div class="channel-copy"><div class="channel-meta"><span class="tiny-label" id="channel-type">NATIVE PAY</span><span class="plain-tag" id="channel-tag">微信扫码</span></div><h3 id="channel-heading">扫码付款，留在熟悉的网页。</h3><p id="channel-detail">电脑展示订单二维码，用户用微信扫一扫。支付中心确认到账后，把签名结果通知产品服务端。</p></div><a class="circle-link" href="/integration.html#channels" aria-label="查看支付场景接入说明">↗</a></div></section>
+      <section class="process-section" aria-labelledby="process-title"><div class="section-heading"><h2 id="process-title">把付款，接到开通之前。</h2><a class="text-link" href="/integration.html">完整接入流程 <span aria-hidden="true">→</span></a></div><div class="process-grid"><article class="number-card"><span class="card-number">01</span><span class="step-kicker">CREATE</span><h3 class="card-title">产品服务端下单</h3><p class="card-desc">金额与用户权益由产品后端确认，拿到专属收银台链接。</p></article><article class="number-card"><span class="card-number">02</span><span class="step-kicker">PAY</span><h3 class="card-title">统一收银台付款</h3><p class="card-desc">展示商品和金额，按已开通的支付渠道完成微信支付。</p></article><article class="number-card"><span class="card-number">03</span><span class="step-kicker">CONFIRM</span><h3 class="card-title">验签后开通服务</h3><p class="card-desc">产品核验付款通知，幂等开通权益；也可以主动查询核对。</p></article></div></section>
+      <footer class="page-footer"><span>© Brclio <span class="footer-divider">/</span> Stay curious. Keep building.</span><a href="/integration.html">开发者文档 <span aria-hidden="true">↗</span></a></footer>
+    </main>
+  </div>
+</body>
+</html>
