@@ -8,7 +8,7 @@
 
 保留 `bornforthis.cn` 在阿里云的现有权威 DNS，采用 **Cloudflare Pages 子域名入口 → Service binding → 支付 Worker**。Pages 官方支持外部 DNS 的自定义子域名，不需要将整个域名 NS 迁移到 Cloudflare。必须先在 Pages 项目的 Custom domains 注册 `paywc.bornforthis.cn`，再在阿里云添加 `paywc` 的 CNAME 指向实际 `<项目名>.pages.dev`。只添加 CNAME、没有 Pages 域名关联会报 522。HTTPS 证书生效和 CAA 限制需实测核对。[Pages 自定义子域名](https://developers.cloudflare.com/pages/configuration/custom-domains/)
 
-Pages 网关与核心 Worker 分开配置：网关仅处理 HTTP 转发，商户凭据、加密存储和每 10 分钟补偿任务仍在核心 Worker。Pages 使用 Advanced mode 的 `_worker.js`；示意代码：
+Pages 网关与核心 Worker 分开配置：网关仅处理 HTTP 转发，商户凭据、加密存储和每分钟补偿任务仍在核心 Worker。Pages 使用 Advanced mode 的 `_worker.js`；示意代码：
 
 ```js
 export default {
@@ -131,7 +131,9 @@ npm run deploy:live
 5. 验证微信签名及解密、金额/AppID/商户号/订单号校验；GitHub 中只有密文；产品固定 Webhook 经验证后提交权益事务，用户实际获得对应权益。
 6. 重放同一事件、重复点击、Webhook 暂时失败、查询补偿及进程重启场景均不重复开通。浏览器回跳与 Android SDK 回调不直接开通。
 
-若需紧急停用，先将 `PAYMENT_ENABLED=false` 发布生效。停用后的已支付订单仍需依据微信商户平台和保存的订单记录对账处理；关闭下单不能替代退款或对账。恢复前修复配置并确认未投递通知，不能仅凭页面恢复可访问就宣称收款恢复。
+若需暂停新下单，保留 `PAYMENT_MODE=live`，将 `PAYMENT_ENABLED=false` 发布生效，并保留有效商户密钥、产品登记和私有存储配置。新下单接口将返回 `PAYMENTS_DISABLED`；既有收银台访问、签名查单、微信付款通知、管理员查单/关单和每分钟补偿任务继续运行。暂停不会立即撤销已经发出的支付参数，需要取消既有未付款订单时执行关单。不要用 `PAYMENT_MODE=demo` 代替暂停，它会同时停用微信维护接口和计划任务。
+
+暂停后的已支付订单仍需依据微信商户平台和保存的订单记录对账处理；关闭下单不能替代退款或对账。恢复前修复配置并确认未投递通知，不能仅凭页面恢复可访问就宣称收款恢复。
 
 ## 本仓库当前线上维护命令
 

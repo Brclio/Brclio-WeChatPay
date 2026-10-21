@@ -24,6 +24,12 @@ export interface Payment {
   context?: 'web' | 'miniprogram';
   app?: { appid:string; partnerid:string; prepayid:string; package:string; noncestr:string; timestamp:string; sign:string };
 }
+export interface OrderEvent {
+  id:string; at:string; type:string; actor?:string; reason?:string;
+  fromStatus?:OrderStatus; toStatus?:OrderStatus;
+  outcome?:'requested'|'succeeded'|'failed'; code?:string;
+}
+export interface CloseRequest { at:string; source:'timeout'|'admin'; actor?:string; reason?:string }
 export interface Order {
   version: 1; id: string; clientId: string; clientName: string; merchantOrderId: string;
   sku: string; quantity: number; description: string; total: number; currency: 'CNY';
@@ -31,6 +37,8 @@ export interface Order {
   returnUrl?: string; payerOpenid?: string; clientIp?: string;
   payment?: Payment; requestHash: string; transactionId?: string; paidAt?: string;
   lastQueryAt?: string; queryLeaseUntil?: string;
+  updatedAt?:string; closedAt?:string; closeReason?:'timeout'|'admin'|'provider'|'not-created';
+  closeRequested?:CloseRequest; history?:OrderEvent[];
   delivery: { status: 'pending' | 'delivered' | 'manual'; attempts: number; nextAt: string; deliveredAt?: string; leaseUntil?: string } | null;
 }
 export interface WechatTransaction {

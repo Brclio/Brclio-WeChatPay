@@ -38,7 +38,6 @@ if ([...args].some((arg) => !['--write', '--write-dev-vars', '--help'].includes(
       WECHAT_PUBLIC_KEY_ID: '',
       ENABLED_CHANNELS: 'native',
       ALLOWED_ORIGINS: 'https://brclio.com,https://*.brclio.com',
-      ORDER_TTL_MINUTES: '15',
     };
     await mkdir('secrets', { recursive: true, mode: 0o700 });
     await writeFile('secrets/bootstrap.json', JSON.stringify(values, null, 2) + '\n', { flag: 'wx', mode: 0o600 });

@@ -39,6 +39,7 @@ class FakeGithub {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     this.requests.push({ url: url.href, body });
     if (url.pathname === `/repos/${repo}`) return Response.json({ private: this.isPrivate, default_branch: 'main' });
+    if (init?.method==='GET' && (url.pathname.startsWith(`/repos/${repo}/contents/orders/`) || url.pathname.startsWith(`/repos/${repo}/contents/work/`))) return new Response(null,{status:404});
     assert.equal(url.pathname, `/repos/${repo}/contents/${path}`);
     if (init?.method === 'GET') return this.file ? Response.json({ ...this.file, encoding: 'base64', type: 'file' }) : new Response(null, { status: 404 });
     assert.equal(init?.method, 'PUT');
@@ -140,6 +141,7 @@ test('disabled runtime clients still authenticate signed queries but cannot crea
   const service = new PaymentService(runtime, { provider: { async create() { providerCreates++; throw new Error('Must not create'); }, async query() { throw new Error('Not used'); }, async close() {} } });
   await assert.rejects(service.create(authenticated, { merchantOrderId: 'new-order', sku: 'member', channel: 'native' }), (error: unknown) => error instanceof HttpError && error.code === 'CLIENT_DISABLED');
   assert.equal(providerCreates, 0);
+  assert.equal(github.writes,0);
 });
 
 test('CAS retry preserves another administrator catalog update and stable generated keys', async (t) => {

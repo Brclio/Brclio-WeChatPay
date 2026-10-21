@@ -102,7 +102,7 @@ test('failed durable recovery-index creation prevents a provider charge request'
   store.failWork = true;
   await assert.rejects(service.create(client, input));
   assert.equal(provider.creates, 0);
-  assert.equal([...store.values.values()].filter((value) => (value as Order).status === 'CREATING').length, 1);
+  assert.equal(store.values.size, 0, 'A failed work-index write must leave no undiscoverable order');
 });
 
 test('mismatched merchant, application, amount, currency, and trade type never mark an order paid', async () => {
@@ -363,4 +363,338 @@ test('correct expectedTotal guards the catalog-derived quantity total without pe
   await assert.rejects(service.create(client, { ...input, quantity: 2, expectedTotal: 25800, amount: 1 } as never), (error: unknown) => error instanceof HttpError && error.code === 'ORDER_FIELDS_INVALID');
   assert.equal(provider.creates, 1);
   assert.equal((await service.read(order.id)).total, 25800);
+});
+
+test('Native lifetime is exactly five minutes even with a legacy longer TTL setting', async () => {
+  const { store, provider } = fixture();
+  const service = new PaymentService({ ...env, ORDER_TTL_MINUTES: '120' }, { store, provider });
+  const order = await service.create(client, input);
+  assert.equal(Date.parse(order.expiresAt) - Date.parse(order.createdAt), 300000);
+  assert.equal(provider.order!.expiresAt, order.expiresAt);
+  assert.deepEqual(order.history?.map(x => x.type), ['created', 'payment_prepared']);
+});
+
+test('legacy fifteen-minute orders are closed after five minutes when accessed, despite a recent query', async () => {
+  const { store, provider, service } = fixture();
+  const order = await service.create(client, input);
+  const old = (await store.update<Order>(orderPath(order.id), current => ({ ...current!, createdAt: new Date(Date.now()-301000).toISOString(), expiresAt: new Date(Date.now()+599000).toISOString(), lastQueryAt: new Date().toISOString() })))!;
+  provider.onQuery = async () => transaction(order, { trade_state: provider.closes ? 'CLOSED' : 'NOTPAY', transaction_id: undefined, success_time: undefined });
+  const closed = await service.enforceExpiry(old);
+  assert.equal(closed.status, 'CLOSED');
+  assert.equal(closed.closeReason, 'timeout');
+  assert.ok(closed.closedAt);
+  assert.equal(provider.closes, 1);
+  assert.ok(closed.history?.some(x => x.type === 'close_requested'));
+  assert.ok(closed.history?.some(x => x.type === 'closed' && x.fromStatus === 'PENDING'));
+});
+
+test('an expired unpaid order never exposes usable payment parameters while closing fails', async () => {
+  const { store, provider, service } = fixture();
+  const order = await service.create(client, input);
+  await store.update<Order>(orderPath(order.id), current => ({ ...current!, expiresAt: new Date(Date.now()-1000).toISOString() }));
+  provider.onClose = async () => { throw new Error('Upstream close unavailable'); };
+  await assert.rejects(service.refresh(order.id, true));
+  const pending = await service.read(order.id);
+  assert.equal(pending.status, 'PENDING');
+  assert.equal(pending.closeRequested?.source, 'timeout');
+  assert.equal((await service.publicOrder(pending)).payment, undefined);
+  assert.equal((await service.publicOrder(pending)).closing, true);
+  assert.ok(store.values.has(`work/${order.id}.json`));
+});
+
+test('administrator closes an unpaid order before its deadline and records actor, reason and outcome', async () => {
+  const { provider, service } = fixture();
+  const order = await service.create(client, input);
+  provider.onQuery = async () => transaction(order, { trade_state: provider.closes ? 'CLOSED' : 'NOTPAY', transaction_id: undefined, success_time: undefined });
+  const closed = await service.adminAction(order.id, 'close', 'admin@example.com', '客户取消购买');
+  assert.equal(closed.status, 'CLOSED');
+  assert.equal(closed.closeReason, 'admin');
+  assert.equal(closed.closeRequested?.reason, '客户取消购买');
+  const actions = closed.history!.filter(x => x.type === 'admin_close');
+  assert.deepEqual(actions.map(x => x.outcome), ['requested', 'succeeded']);
+  assert.ok(actions.every(x => x.actor === 'admin@example.com' && x.reason === '客户取消购买'));
+});
+
+test('administrator cannot close paid orders or mutate without a meaningful reason', async () => {
+  const { provider, service } = fixture();
+  const order = await service.create(client, input);
+  for (const reason of ['', 'xx', 'x'.repeat(201), 'reason\nline']) await assert.rejects(service.adminAction(order.id, 'close', 'admin@example.com', reason), (e: unknown) => e instanceof HttpError && e.code === 'ACTION_REASON_REQUIRED');
+  await service.applyTransaction(transaction(order));
+  await assert.rejects(service.adminAction(order.id, 'close', 'admin@example.com', '客户取消购买'), (e: unknown) => e instanceof HttpError && e.code === 'ORDER_ALREADY_PAID');
+  assert.equal(provider.closes, 0);
+});
+
+test('failed manual close persists intent and sanitized failure audit, then cron retries it', async () => {
+  const { provider, service } = fixture();
+  const order = await service.create(client, input);
+  provider.onClose = async () => { throw new WechatError('UPSTREAM_ERROR'); };
+  await assert.rejects(service.adminAction(order.id, 'close', 'admin@example.com', '重复订单处理'));
+  const failed = await service.read(order.id);
+  assert.equal(failed.closeRequested?.source, 'admin');
+  assert.equal((await service.publicOrder(failed)).payment, undefined);
+  assert.equal(failed.history!.at(-1)!.outcome, 'failed');
+  assert.equal(failed.history!.at(-1)!.code, 'WECHAT_REQUEST_FAILED');
+  provider.onClose = undefined;
+  provider.onQuery = async () => transaction(order, { trade_state: provider.closes > 1 ? 'CLOSED' : 'NOTPAY', transaction_id: undefined, success_time: undefined });
+  assert.deepEqual(await service.processWork(), { processed: 1, failed: 0 });
+  assert.equal((await service.read(order.id)).status, 'CLOSED');
+});
+
+test('a generic close error racing a payment is reconciled as paid and never recorded closed', async () => {
+  const { provider, service } = fixture();
+  const order = await service.create(client, input);
+  provider.onClose = async () => { throw new WechatError('UPSTREAM_ERROR'); };
+  provider.onQuery = async () => transaction(order, provider.queries === 1 ? { trade_state: 'NOTPAY', transaction_id: undefined, success_time: undefined } : {});
+  const paid = await service.adminAction(order.id, 'close', 'admin@example.com', '客户请求取消');
+  assert.equal(paid.status, 'SUCCESS');
+  assert.equal(paid.closedAt, undefined);
+  assert.equal(paid.delivery?.status, 'delivered');
+});
+
+test('a late verified payment after closed-work cleanup restores durable fulfillment and resists stale unpaid queries', async () => {
+  const { store, provider, service } = fixture();
+  const order = await service.create(client, input);
+  provider.onQuery = async () => transaction(order, { trade_state: 'CLOSED', transaction_id: undefined, success_time: undefined });
+  await service.refresh(order.id, true);
+  await service.processWork();
+  assert.equal(store.values.has(`work/${order.id}.json`), false);
+  const stale = await service.applyTransaction(transaction(order, { trade_state: 'NOTPAY', transaction_id: undefined, success_time: undefined }));
+  assert.equal(stale.status, 'CLOSED');
+  const paid = await service.applyTransaction(transaction(order));
+  assert.equal(paid.status, 'SUCCESS');
+  assert.ok(store.values.has(`work/${order.id}-delivery.json`));
+  assert.equal((await service.deliver(order.id)).delivery?.status, 'delivered');
+});
+
+test('a creating order with an in-flight prepay request remains closing until the provider order is visible', async () => {
+  const { provider, service } = fixture();
+  let accept!: (p: Payment) => void;
+  provider.onCreate = async () => new Promise(resolve => { accept = resolve; });
+  const creation = service.create(client, input);
+  while (!accept) await new Promise(resolve => setTimeout(resolve, 0));
+  const id = provider.order!.id;
+  provider.onQuery = async () => { throw new WechatError('ORDER_NOT_EXIST'); };
+  const closing = await service.adminAction(id, 'close', 'admin@example.com', '取消创建中的订单');
+  assert.equal(closing.status, 'CREATING');
+  assert.equal(closing.closeRequested?.source, 'admin');
+  accept({ channel: 'native', codeUrl: 'weixin://wxpay/bizpayurl?pr=late' });
+  assert.equal((await creation).payment, undefined);
+  provider.onQuery = async () => transaction(provider.order!, { trade_state: provider.closes ? 'CLOSED' : 'NOTPAY', transaction_id: undefined, success_time: undefined });
+  // The expired query lease will let a later cron finish the durable close intent.
+  const { store } = service;
+  await store.update<Order>(orderPath(id), current => ({ ...current!, queryLeaseUntil: undefined }));
+  assert.equal((await service.refresh(id, true)).status, 'CLOSED');
+});
+
+test('expired provider-missing pending orders close instead of recreating a new payment opportunity', async () => {
+  const { store, provider, service } = fixture();
+  const order = await service.create(client, input);
+  await store.update<Order>(orderPath(order.id), current => ({ ...current!, expiresAt: new Date(Date.now()-1000).toISOString() }));
+  provider.onQuery = async () => { throw new WechatError('ORDER_NOT_EXIST'); };
+  assert.equal((await service.refresh(order.id, true)).status, 'CLOSED');
+  assert.equal(provider.creates, 1);
+});
+
+test('a stale closed-work cleanup cannot delete a concurrently restored payment delivery job', async () => {
+  const { store, provider, service } = fixture();
+  const order = await service.create(client, input);
+  provider.onQuery = async () => transaction(order, { trade_state: 'CLOSED', transaction_id: undefined, success_time: undefined });
+  await service.refresh(order.id, true);
+  const remove = store.remove.bind(store);
+  let restored = false;
+  store.remove = async path => {
+    if (path === `work/${order.id}.json` && !restored) {
+      restored = true;
+      await service.applyTransaction(transaction(order));
+    }
+    await remove(path);
+  };
+  await service.processWork();
+  assert.equal((await service.read(order.id)).status, 'SUCCESS');
+  assert.ok(store.values.has(`work/${order.id}-delivery.json`));
+  await service.processWork();
+  assert.equal((await service.read(order.id)).delivery?.status, 'delivered');
+});
+
+test('recovery does not submit a prepay order with too little time left for the provider minimum expiry', async () => {
+  const { store, provider, service } = fixture();
+  provider.onCreate = async () => { throw new Error('Lost before prepay acceptance'); };
+  await assert.rejects(service.create(client, input));
+  const order = provider.order!;
+  await store.update<Order>(orderPath(order.id), current => ({ ...current!, createdAt: new Date(Date.now()-250000).toISOString(), expiresAt: new Date(Date.now()+50000).toISOString() }));
+  provider.onQuery = async () => { throw new WechatError('ORDER_NOT_EXIST'); };
+  const recovering = await service.refresh(order.id, true);
+  assert.equal(provider.creates, 1);
+  assert.equal(recovering.status, 'CREATING');
+  assert.equal(recovering.payment, undefined);
+});
+
+test('administrator can verify an already closed order and recover a missed real payment', async () => {
+  const { provider, service } = fixture();
+  const order = await service.create(client, input);
+  await service.applyTransaction(transaction(order, { trade_state: 'CLOSED', transaction_id: undefined, success_time: undefined }));
+  provider.onQuery = async () => transaction(order);
+  const repaired = await service.adminAction(order.id, 'refresh', 'admin@example.com', '核对用户提供的付款凭证');
+  assert.equal(repaired.status, 'SUCCESS');
+  assert.equal(repaired.delivery?.status, 'delivered');
+  assert.equal(provider.queries, 1);
+});
+
+test('cron restores the encrypted order draft when creation crashes between the work and order writes', async () => {
+  const { store, provider, service } = fixture();
+  const create=store.create.bind(store);
+  let failOrder=true;
+  store.create=async (path,value) => {
+    if (failOrder && path.startsWith('orders/')) throw new Error('Order write interrupted');
+    return create(path,value);
+  };
+  await assert.rejects(service.create(client,input));
+  assert.equal(provider.creates,0);
+  const job=[...store.values.values()][0] as {draft:Order};
+  assert.equal(job.draft.status,'CREATING');
+  failOrder=false;
+  provider.onQuery=async () => {throw new WechatError('ORDER_NOT_EXIST');};
+  assert.deepEqual(await service.processWork(),{processed:1,failed:0});
+  assert.equal((await service.read(job.draft.id)).status,'PENDING');
+  assert.equal(provider.creates,1);
+});
+
+test('cron restores verified success from its separate encrypted delivery job after interrupted persistence', async () => {
+  const { store, service } = fixture();
+  const order=await service.create(client,input);
+  await service.applyTransaction(transaction(order,{trade_state:'CLOSED',transaction_id:undefined,success_time:undefined}));
+  await store.remove(`work/${order.id}.json`);
+  const update=store.update.bind(store);
+  let failPayment=true;
+  store.update=async (path,mutator) => {
+    if (failPayment && path===orderPath(order.id)) throw new Error('Payment write interrupted');
+    return update(path,mutator);
+  };
+  await assert.rejects(service.applyTransaction(transaction(order)));
+  assert.equal((await service.read(order.id)).status,'CLOSED');
+  assert.ok(store.values.has(`work/${order.id}-delivery.json`));
+  failPayment=false;
+  assert.deepEqual(await service.processWork(),{processed:1,failed:0});
+  assert.equal((await service.read(order.id)).status,'SUCCESS');
+  assert.equal((await service.read(order.id)).delivery?.status,'delivered');
+});
+
+test('a create retry preserves the first persisted draft deadline and immutable business order content', async () => {
+  const { store, provider, service } = fixture();
+  const create=store.create.bind(store);
+  let failOrder=true;
+  store.create=async (path,value) => {
+    if (failOrder && path.startsWith('orders/')) throw new Error('Order write interrupted');
+    return create(path,value);
+  };
+  await assert.rejects(service.create(client,input));
+  const draft=([...store.values.values()][0] as {draft:Order}).draft;
+  failOrder=false;
+  await assert.rejects(service.create(client,{...input,quantity:2}), (e:unknown)=>e instanceof HttpError && e.code==='IDEMPOTENCY_CONFLICT');
+  assert.equal(provider.creates,0);
+  const recovered=await service.create(client,input);
+  assert.equal(recovered.createdAt,draft.createdAt);
+  assert.equal(recovered.expiresAt,draft.expiresAt);
+  assert.equal(recovered.total,draft.total);
+});
+
+test('a provider query returning a different existing order is rejected without changing either payment', async () => {
+  const { provider, service } = fixture();
+  const first=await service.create(client,input);
+  const other=await service.create(client,{...input,merchantOrderId:'business-order-other'});
+  provider.onQuery=async () => transaction(other);
+  await assert.rejects(service.refresh(first.id,true),(e:unknown)=>e instanceof HttpError && e.code==='TRANSACTION_MISMATCH');
+  assert.equal((await service.read(first.id)).status,'PENDING');
+  assert.equal((await service.read(other.id)).status,'PENDING');
+});
+
+test('existing-order replay retains original pricing and AppID after catalog, channel, and return-origin changes', async () => {
+  const { store, provider, service } = fixture();
+  const original = await service.create(client, input);
+  const changedClient: Client = { ...client, products: { replacement: { description: '替换商品', amount: 25800 } }, channels: ['app'], returnOrigins: ['https://other.brclio.com'] };
+  const changedService = new PaymentService({ ...env, WECHAT_APP_ID: 'wx0000000000000000', ENABLED_CHANNELS: 'app' }, { store, provider });
+  const replayed = await changedService.create(changedClient, { ...input, expectedTotal: original.total });
+  assert.deepEqual(replayed, original);
+  assert.equal(provider.creates, 1);
+  await assert.rejects(changedService.create(changedClient, { ...input, expectedTotal: 25800 }), (e: unknown) => e instanceof HttpError && e.code === 'CATALOG_PRICE_CHANGED');
+  await assert.rejects(changedService.create(changedClient, { ...input, merchantOrderId: 'new-business-order' }), (e: unknown) => e instanceof HttpError && e.code === 'ORDER_INVALID');
+  assert.equal(provider.creates, 1);
+});
+
+test('catalog edits do not let a replay change client-supplied order fields or bypass expected totals', async () => {
+  const { store, provider, service } = fixture();
+  const original = await service.create(client, input);
+  const changedClient = { ...client, products: { membership: { description: '涨价后的商品', amount: 25800, maxQuantity: 1 } } };
+  assert.equal((await service.create(changedClient, { ...input, expectedTotal: original.total })).total, original.total);
+  for (const change of [{ quantity: 2 }, { sku: 'another-sku' }, { channel: 'h5', clientIp: '203.0.113.1' }, { returnUrl: 'https://other.brclio.com/account' }]) {
+    await assert.rejects(service.create(changedClient, { ...input, ...change } as never), (e: unknown) => e instanceof HttpError && e.code === 'IDEMPOTENCY_CONFLICT');
+  }
+  await assert.rejects(service.create(changedClient, { ...input, amount: 1 } as never), (e: unknown) => e instanceof HttpError && e.code === 'ORDER_FIELDS_INVALID');
+  assert.equal((await service.read(original.id)).total, original.total);
+  assert.equal(provider.creates, 1);
+  assert.equal([...store.values.keys()].filter(path => path.startsWith('orders/')).length, 1);
+});
+
+test('an encrypted draft replays with its original price, AppID, and deadline after catalog changes', async () => {
+  const { store, provider, service } = fixture();
+  const create = store.create.bind(store);
+  let failOrder = true;
+  store.create = async (path, value) => {
+    if (failOrder && path.startsWith('orders/')) throw new Error('Canonical order write interrupted');
+    return create(path, value);
+  };
+  await assert.rejects(service.create(client, input));
+  const draft = ([...store.values.values()][0] as { draft: Order }).draft;
+  failOrder = false;
+  const changedClient: Client = { ...client, products: { replacement: { description: '替换商品', amount: 25800 } }, channels: ['app'], returnOrigins: ['https://other.brclio.com'] };
+  const changedService = new PaymentService({ ...env, WECHAT_APP_ID: 'wx0000000000000000', ENABLED_CHANNELS: 'app' }, { store, provider });
+  const restored = await changedService.create(changedClient, { ...input, expectedTotal: draft.total });
+  assert.equal(restored.appId, draft.appId);
+  assert.equal(restored.total, draft.total);
+  assert.equal(restored.description, draft.description);
+  assert.equal(restored.createdAt, draft.createdAt);
+  assert.equal(restored.expiresAt, draft.expiresAt);
+  assert.equal(provider.order!.appId, draft.appId);
+  assert.equal(provider.creates, 1);
+});
+
+test('a disabled product can replay paid and pending orders but cannot prepare an unsubmitted draft or create a new order', async () => {
+  const { store, provider, service } = fixture();
+  const pending = await service.create(client, input);
+  const disabled = { ...client, disabled: true, products: { replacement: { description: '替换商品', amount: 25800 } } };
+  assert.equal((await service.create(disabled, input)).id, pending.id);
+  await service.applyTransaction(transaction(pending));
+  assert.equal((await service.create(disabled, input)).status, 'SUCCESS');
+  await assert.rejects(service.create(disabled, { ...input, merchantOrderId: 'disabled-new-order' }), (e: unknown) => e instanceof HttpError && e.code === 'CLIENT_DISABLED');
+  const merchantOrderId = 'disabled-draft';
+  const actualId = (await hmac(env.ORDER_ID_SECRET!, `${client.id}\n${merchantOrderId}`)).slice(0, 32);
+  const draft: Order = { ...pending, id: actualId, merchantOrderId, status: 'CREATING', payment: undefined, delivery: null };
+  await store.create(`work/${actualId}.json`, { id: actualId, createdAt: draft.createdAt, draft });
+  assert.equal((await service.create(disabled, { ...input, merchantOrderId })).status, 'CREATING');
+  assert.equal(provider.creates, 1);
+  assert.equal((await service.read(actualId)).createdAt, draft.createdAt);
+});
+
+test('replaying a channel-specific order preserves its original payer and user IP', async () => {
+  const { provider, service } = fixture();
+  provider.onCreate = async order => ({ channel: order.channel });
+  const jsapi = { ...input, merchantOrderId: 'jsapi-replay', channel: 'jsapi' as const, payerOpenid: 'openid_1234567890' };
+  const h5 = { ...input, merchantOrderId: 'h5-replay', channel: 'h5' as const, clientIp: '203.0.113.1' };
+  await service.create(client, jsapi);
+  await service.create(client, h5);
+  const changed = { ...client, products: { replacement: { description: '替换商品', amount: 25800 } } };
+  assert.equal((await service.create(changed, jsapi)).payerOpenid, jsapi.payerOpenid);
+  assert.equal((await service.create(changed, h5)).clientIp, h5.clientIp);
+  await assert.rejects(service.create(changed, { ...jsapi, payerOpenid: 'openid_9876543210' }), (e: unknown) => e instanceof HttpError && e.code === 'IDEMPOTENCY_CONFLICT');
+  await assert.rejects(service.create(changed, { ...h5, clientIp: '203.0.113.2' }), (e: unknown) => e instanceof HttpError && e.code === 'IDEMPOTENCY_CONFLICT');
+  assert.equal(provider.creates, 2);
+});
+
+test('a legacy work reference without a canonical order or draft fails closed instead of resetting the payment window', async () => {
+  const { store, provider, service } = fixture();
+  const id = (await hmac(env.ORDER_ID_SECRET!, `${client.id}\n${input.merchantOrderId}`)).slice(0, 32);
+  await store.create(`work/${id}.json`, { id, createdAt: new Date(Date.now() - 600000).toISOString() });
+  await assert.rejects(service.create(client, input), (e: unknown) => e instanceof HttpError && e.code === 'WORK_RECORD_INVALID');
+  assert.equal(store.values.has(orderPath(id)), false);
+  assert.equal(provider.creates, 0);
 });

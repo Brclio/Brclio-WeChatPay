@@ -27,4 +27,4 @@ WECHAT_PUBLIC_KEYS_JSON="{}"
 WECHAT_PUBLIC_KEY_ID=""
 ENABLED_CHANNELS="native"
 ALLOWED_ORIGINS="https://brclio.com,https://*.brclio.com"
-ORDER_TTL_MINUTES="15"
+# Order lifetime is fixed in code: 5 minutes for every channel.

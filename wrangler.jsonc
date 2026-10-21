@@ -20,10 +20,9 @@
     "WECHAT_MCH_ID": "1751349372",
     "WECHAT_APP_ID": "wx59aa532fbf6fa540",
     "ENABLED_CHANNELS": "native",
-    "ALLOWED_ORIGINS": "https://brclio.com,https://*.brclio.com",
-    "ORDER_TTL_MINUTES": "15"
+    "ALLOWED_ORIGINS": "https://brclio.com,https://*.brclio.com"
   },
   "ratelimits": [{"name":"AUTH_RATE_LIMITER","namespace_id":"1001","simple":{"limit":5,"period":60}}],
-  "triggers": { "crons": ["*/10 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": false }
 }

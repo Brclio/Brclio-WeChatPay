@@ -1,6 +1,8 @@
 import { constantTimeEqual, hmac, randomHex, sha256 } from './crypto';
-import { baseUrl, enabledChannels } from './config';
-import { loadClients, maskedClient, saveClient } from './registry';
+import { assertMaintenance, baseUrl, enabledChannels } from './config';
+import { configStore, loadClients, maskedClient, runtimeEnv, saveClient } from './registry';
+import { adminOrder, OrderLedger } from './ledger';
+import { PaymentService } from './service';
 import { issueIntegration } from './integration';
 import { bootstrapSkill } from './bootstrap-skill';
 import { integrationSkill } from './skill';
@@ -55,7 +57,7 @@ export async function handleAdmin(request:Request,env:Env,readBody:()=>Promise<s
     const [perIp,global]=await Promise.all([env.AUTH_RATE_LIMITER.limit({key:'admin:ip:'+await sha256(ip)}),env.AUTH_RATE_LIMITER.limit({key:'admin:global'})]);
     if (!perIp.success || !global.success) throw new HttpError(429,'LOGIN_RATE_LIMITED','尝试次数较多，请一分钟后重试');
     let input:any;try {input=JSON.parse(await readBody());}catch {throw new HttpError(400,'JSON_INVALID','登录信息格式不正确');}
-    if (typeof input.password!=='string' || input.password.length>256 || typeof input.email!=='string') throw new HttpError(401,'LOGIN_INVALID','账号或密码不正确');
+    if (!input || typeof input!=='object' || Array.isArray(input) || typeof input.password!=='string' || input.password.length>256 || typeof input.email!=='string') throw new HttpError(401,'LOGIN_INVALID','账号或密码不正确');
     const matches=await verifyPassword(input.password,env.ADMIN_PASSWORD_HASH!);
     if (!matches || !constantTimeEqual(input.email.trim().toLowerCase(),env.ADMIN_EMAIL!.toLowerCase())) throw new HttpError(401,'LOGIN_INVALID','账号或密码不正确');
     const payload=btoa(JSON.stringify({email:env.ADMIN_EMAIL,exp:Math.floor(Date.now()/1000)+sessionSeconds,nonce:randomHex(),version:await sha256(env.ADMIN_PASSWORD_HASH!)})).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
@@ -69,6 +71,24 @@ export async function handleAdmin(request:Request,env:Env,readBody:()=>Promise<s
   }
   if (path==='/api/admin/session' && request.method==='GET') return json(current);
   if (path==='/api/admin/logout' && request.method==='POST') return json({ok:true},200,{'Set-Cookie':cookie(request,'',0)});
+  if (request.method==='GET' && (path==='/api/admin/orders' || path==='/api/admin/payments')) {
+    return json(await new OrderLedger(configStore(env),env.ADMIN_SESSION_SECRET!).list(path.endsWith('/payments')?'payments':'orders',url.searchParams));
+  }
+  const orderRoute=path.match(/^\/api\/admin\/orders\/([a-f0-9]{32})(?:\/(refresh|close|retry-notification))?$/);
+  if (orderRoute) {
+    if (request.method==='GET' && !orderRoute[2]) return json({order:adminOrder(await new OrderLedger(configStore(env),env.ADMIN_SESSION_SECRET!).read(orderRoute[1]))});
+    if (request.method==='POST' && orderRoute[2]) {
+      let input:unknown;try {input=JSON.parse(await readBody());}catch {throw new HttpError(400,'JSON_INVALID','操作原因不是有效 JSON');}
+      if (!input || typeof input!=='object' || Array.isArray(input) || Object.keys(input).some(key=>key!=='reason') || typeof (input as {reason?:unknown}).reason!=='string') throw new HttpError(400,'ADMIN_REASON_REQUIRED','请填写 3 至 200 字的操作原因');
+      const reason=(input as {reason:string}).reason.trim();
+      if (reason.length<3 || reason.length>200 || /[\u0000-\u001f\u007f]/.test(reason)) throw new HttpError(400,'ADMIN_REASON_REQUIRED','请填写 3 至 200 字的操作原因');
+      const action=orderRoute[2] as 'refresh'|'close'|'retry-notification';
+      if (action!=='retry-notification') assertMaintenance(env);
+      const service=new PaymentService(await runtimeEnv(env));
+      return json({order:adminOrder(await service.adminAction(orderRoute[1],action,current.email,reason))});
+    }
+    throw new HttpError(405,'METHOD_NOT_ALLOWED','不支持此请求方式');
+  }
   if (path==='/api/admin/bootstrap-skill' && request.method==='GET') {
     const access=await issueIntegration(env);
     return json({filename:'SKILL.md',content:bootstrapSkill(baseUrl(env),access.clientId,access.token,access.expiresAt),expiresAt:access.expiresAt});

@@ -2,7 +2,9 @@
 
 统一的 Cloudflare Workers 支付入口，供 `brclio.com`、子域名及桌面/Android 产品后端接入。业务系统创建订单，用户进入 `paywc.bornforthis.cn` 收银台；支付中心验证微信回调和查询结果，通过签名通知将付款结果交给业务系统。
 
-代码包含微信支付 APIv3、Native 二维码收银台、邮箱/密码保护的产品管理后台、一键复制的 AI 接入 Skill、单产品限时接入授权、服务端商品定价、业务订单幂等、签名查单、支付通知、通知重试与补偿查询、加密 GitHub 数据存储及 Node.js 接入 SDK。H5、JSAPI/小程序和 APP 通道已提供接口适配，启用仍需各自的产品权限、AppID、域名或客户端配置。退款、订阅自动扣款、发票和多商户代收不在当前接口范围。
+代码包含微信支付 APIv3、Native 二维码收银台、邮箱/密码保护的产品管理后台、订单与付款记录、超时关单、管理员查单/关单/重试通知及操作历史、一键复制的 AI 接入 Skill、单产品限时接入授权、服务端商品定价、业务订单幂等、签名查单、支付通知、通知重试与补偿查询、加密 GitHub 数据存储及 Node.js 接入 SDK。H5、JSAPI/小程序和 APP 通道已提供接口适配，启用仍需各自的产品权限、AppID、域名或客户端配置。退款、订阅自动扣款、发票和多商户代收不在当前接口范围。
+
+所有通道的新订单最多可支付 5 分钟；到期后收银台停止提供支付参数，并通过查单、微信关单和每分钟补偿任务完成关闭确认。管理员可查看订单详情和真实付款流水，并填写原因手动刷新、关闭未付订单或重试业务通知。付款成功以微信验签结果为准，人工操作不能伪造付款；详见[订单与付款记录](docs/order-management.md)。此处描述当前源码能力，线上版本仍以发布状态记录为准。
 
 支付中心已部署到 [paywc.bornforthis.cn](https://paywc.bornforthis.cn)，线上启用 Native 通道。已验证 0.01 元预支付订单、二维码参数、幂等下单、微信未付款查询与关单；**没有执行实际扣款，首个产品的真实付款通知及权益开通验收仍待完成。** 部署与验证记录见 [发布状态](docs/release-status.md)。源码位于 [Brclio/Brclio-WeChatPay](https://github.com/Brclio/Brclio-WeChatPay)。
 
@@ -45,6 +47,7 @@ npm run preflight
 
 - [产品接入文档](docs/integration.md)：签名协议、Node.js SDK、Webhook 验签、幂等开通及补偿。
 - [AI 接入流程](docs/ai-integration.md)：登录复制 Skill、24 小时单产品授权、兼容已有支付流程。
+- [订单与付款记录](docs/order-management.md)：记录筛选、详情、5 分钟超时关闭和管理员操作。
 - [部署文档](docs/deployment.md)：Cloudflare 密钥、域名、商户平台配置和真实支付验收。
 - [架构与运行边界](docs/architecture.md)：GitHub 写入限制、恢复流程、密钥与数据保留。
 - [Node.js SDK](examples/brclio-pay.mjs) 与 [Webhook 服务器示例](examples/webhook-server.mjs)。示例必须接入真实的事务性业务存储，才会开通用户权益。

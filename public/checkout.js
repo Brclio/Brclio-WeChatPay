@@ -17,7 +17,7 @@
   function safeReturn(raw){try{const url=new URL(raw);return url.protocol==='https:'?url.href:null;}catch{return null;}}
   function validOrder(data){return data&&typeof data.id==='string'&&data.id===orderId&&typeof data.description==='string'&&data.amount&&Number.isSafeInteger(data.amount.total)&&data.amount.total>=0&&data.amount.currency==='CNY'&&Object.hasOwn(states,data.status);}
   function updateExpiry(){
-    if(!order||order.status!=='PENDING'||demo)return;
+    if(!order||order.status!=='PENDING'||order.closing||demo)return;
     const ends=Date.parse(order.expiresAt);
     if(!Number.isFinite(ends)){$('time-left').hidden=true;return;}
     const seconds=Math.max(0,Math.ceil((ends-Date.now())/1000));
@@ -28,6 +28,7 @@
   }
   async function render(data){
     if(!validOrder(data))throw new Error('订单响应格式不正确，请稍后重试。');
+    message('');
     order=data;
     expired=false;
     $('order-client').textContent=data.clientName||'Brclio 产品';
@@ -52,6 +53,11 @@
     if(data.status==='CLOSED'||data.status==='PAYERROR'){
       result(data.status==='CLOSED'?'订单已关闭':'暂时无法完成付款',data.status==='CLOSED'?'这笔订单已结束，请返回原产品重新创建订单。':'请返回原产品查看订单，确认付款结果后再尝试。');
       $('back-button').hidden=false;message('如已扣款，请联系产品方核对订单，不要重复付款。');return;
+    }
+    if(data.closing){
+      $('order-status').textContent='正在关闭订单';
+      result('正在关闭订单','本次付款入口已停止，正在与微信核对最终结果。如已付款，请勿重复支付。');
+      return;
     }
     if(data.status==='CREATING'){
       qrPlaceholder('正在准备支付','订单创建中，请稍候。');$('payment-caption').textContent='正在与微信支付确认下单结果';return;
@@ -97,8 +103,7 @@
       const data=await response.json().catch(()=>null);
       if(!response.ok){if(response.status===401||response.status===403)throw new Error('收银台链接已失效，请返回产品重新下单。');throw new Error(typeof data?.error?.message==='string'?data.error.message:typeof data?.message==='string'?data.message:'暂时无法查询订单，请稍后重试。');}
       await render(data);
-      if(data.status==='PENDING'&&refresh&&manual)message('暂未确认到账，页面会继续自动查询。已付款时请勿重复支付。');
-      else if(data.status!=='SUCCESS')message('');
+      if(data.status==='PENDING'&&!data.closing&&refresh&&manual)message('暂未确认到账，页面会继续自动查询。已付款时请勿重复支付。');
     }catch(error){message(error.name==='TimeoutError'?'查询超时，请检查网络后重试。':error.message||'暂时无法查询订单，请稍后重试。',true);if(!order){qrPlaceholder('暂时无法读取订单','请检查订单链接或稍后刷新。');$('order-client').textContent='订单读取失败';$('order-description').textContent='请确认收银台链接';$('order-status').textContent='查询失败';}}
     finally{requesting=false;$('refresh-button').disabled=false;schedule();}
   }

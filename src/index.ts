@@ -2,7 +2,7 @@ import { handleIntegration } from './integration';
 import { handleAdmin } from './admin';
 import { runtimeEnv } from './registry';
 import { authenticate, verifyCheckout } from './auth';
-import { assertLive, baseUrl, enabledChannels, originMatches } from './config';
+import { assertLive, assertMaintenance, baseUrl, enabledChannels, originMatches } from './config';
 import { PaymentService, validId } from './service';
 import { StoreError } from './store';
 import { HttpError, type Env, type Order } from './types';
@@ -58,17 +58,21 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     if (origin && origin!==url.origin && !allowedOrigin(origin,env) && url.hostname!=='localhost' && url.hostname!=='127.0.0.1') throw new HttpError(403,'ORIGIN_DENIED','此来源未登记');
     if (request.method==='OPTIONS') return new Response(null,{status:204});
     if (path.startsWith('/api/integration/')) return handleIntegration(request,env,()=>bodyText(request));
-    if (path.startsWith('/api/admin/')) return handleAdmin(request,env,()=>bodyText(request));
+    if (path.startsWith('/api/admin/')) {
+      try { return await handleAdmin(request,env,()=>bodyText(request)); }
+      finally { if (request.method==='POST') { const id=path.match(/^\/api\/admin\/orders\/([a-f0-9]{32})\//)?.[1];if(id)publicCache.delete(id); } }
+    }
     if (path==='/api/health' && request.method==='GET') {
       let configured=false;try { assertLive(env,false);configured=true; } catch { /* Safe public readiness only. */ }
       return json({service:'brclio-pay',mode:env.PAYMENT_MODE==='live'?'live':'demo',configured,channels:configured?enabledChannels(env):[]});
     }
-    if (env.PAYMENT_MODE!=='live' || env.PAYMENT_ENABLED!=='true') throw new HttpError(503,'PAYMENTS_DISABLED','收款尚未启用，请等待商户配置完成');
-    assertLive(env,false);
+    if (env.PAYMENT_MODE!=='live') throw new HttpError(503,'PAYMENTS_DISABLED','收款尚未启用，请等待商户配置完成');
     const checkoutPreflight=path.match(/^\/api\/checkout\/([a-f0-9]{32})(\/refresh)?$/);
     const clientPreflight=path.match(/^\/api\/v1\/orders(?:\/([a-f0-9]{32})(?:\/(refresh|retry-notification))?)?$/);
     const isNotify=path==='/api/wechat/notify' && request.method==='POST';
     if (!checkoutPreflight && !clientPreflight && !isNotify) throw new HttpError(404,'NOT_FOUND','未找到接口');
+    if (clientPreflight && !clientPreflight[1] && request.method==='POST') assertLive(env,false);
+    else assertMaintenance(env);
     if (checkoutPreflight) await verifyCheckout(request,checkoutPreflight[1],env);
     if (clientPreflight) {
       const timestamp=request.headers.get('X-Brclio-Timestamp')||'';
@@ -77,7 +81,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     // Authenticate WeChat before reading any GitHub registry or order data.
     const notification=isNotify?await new WechatPay(env).notification(request.headers,await bodyText(request)):undefined;
     env=await runtimeEnv(env);
-    assertLive(env);
+    assertMaintenance(env);
     const service=new PaymentService(env);
     if (path==='/api/wechat/notify' && request.method==='POST') {
       const transaction=notification!;
@@ -98,6 +102,10 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         const cached=publicCache.get(id);
         if (cached && Date.now()-cached.at<8000) order=cached.order;
         else {order=await service.read(id);if (publicCache.size>500) publicCache.clear();publicCache.set(id,{at:Date.now(),order});}
+        const previousStatus=order.status;
+        order=await service.enforceExpiry(order);
+        if (previousStatus!=='SUCCESS' && order.status==='SUCCESS') background(ctx,service.deliver(id));
+        if (order.closeRequested || ['SUCCESS','CLOSED'].includes(order.status)) publicCache.delete(id);
       }
       return json(await service.publicOrder(order));
     }
@@ -114,7 +122,12 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       if (v1[1]) {
         let order=await service.read(v1[1]);
         if (order.clientId!==client.id) throw new HttpError(404,'ORDER_NOT_FOUND','未找到该订单');
-        if (request.method==='GET' && !v1[2]) return json(await service.clientOrder(order));
+        if (request.method==='GET' && !v1[2]) {
+          const previousStatus=order.status;
+          order=await service.enforceExpiry(order);
+          if (previousStatus!=='SUCCESS' && order.status==='SUCCESS') background(ctx,service.deliver(order.id));
+          return json(await service.clientOrder(order));
+        }
         if (request.method==='POST' && v1[2]==='refresh') {order=await service.refresh(order.id);publicCache.delete(order.id);if (order.status==='SUCCESS') background(ctx,service.deliver(order.id));return json(await service.clientOrder(order));}
         if (request.method==='POST' && v1[2]==='retry-notification') {order=await service.retryNotification(order);publicCache.delete(order.id);return json(await service.clientOrder(order));}
       }
@@ -147,10 +160,9 @@ export default {
     }
   },
   async scheduled(controller:ScheduledController,env:Env,_ctx:ExecutionContext):Promise<void> {
-    if (env.PAYMENT_MODE!=='live' || env.PAYMENT_ENABLED!=='true') return;
+    if (env.PAYMENT_MODE!=='live') return;
     env=await runtimeEnv(env);
-    if (env.CLIENTS_JSON==='[]') return;
-    assertLive(env);
+    assertMaintenance(env);
     const result=await new PaymentService(env).processWork(controller.scheduledTime);
     if (result.failed) {logged('RECONCILIATION_INCOMPLETE');throw new Error('Payment reconciliation requires retry');}
   }

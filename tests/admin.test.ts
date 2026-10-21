@@ -80,6 +80,14 @@ test('wrong email and wrong password return the same authentication failure', as
   }
 });
 
+test('valid JSON login scalars and arrays return generic authentication failures while malformed JSON remains a bad request', async () => {
+  const env = environment();
+  for (const input of [null, true, false, 42, 'credentials', [], [{ email: env.ADMIN_EMAIL, password }], {}, { email: env.ADMIN_EMAIL, password: null }]) {
+    await assert.rejects(handleAdmin(request('/api/admin/login', { method: 'POST', origin }), env, async () => JSON.stringify(input)), rejectsWith(401, 'LOGIN_INVALID'));
+  }
+  await assert.rejects(handleAdmin(request('/api/admin/login', { method: 'POST', origin }), env, async () => '{'), rejectsWith(400, 'JSON_INVALID'));
+});
+
 test('login requires same-origin requests and both IP and shared rate-limit checks', async () => {
   const env = environment();
   const keys: string[] = [];

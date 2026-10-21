@@ -89,7 +89,6 @@ if (channels.includes('jsapi')) {
 }
 if (channels.includes('app')) check('WECHAT_APP_APP_ID', () => /^wx[a-zA-Z0-9]{16}$/.test(env.WECHAT_APP_APP_ID));
 check('ALLOWED_ORIGINS', () => (env.ALLOWED_ORIGINS || '').split(',').map((value) => value.trim()).every(originPattern));
-check('ORDER_TTL_MINUTES', () => /^\d+$/.test(env.ORDER_TTL_MINUTES || '15') && Number(env.ORDER_TTL_MINUTES || '15') >= 5 && Number(env.ORDER_TTL_MINUTES || '15') <= 120);
 let configuredClients = [];
 function validClients(clients) {
   if (!Array.isArray(clients)) return false;

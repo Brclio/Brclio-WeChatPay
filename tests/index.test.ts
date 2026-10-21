@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { createHmac, generateKeyPairSync, pbkdf2Sync } from 'node:crypto';
 import test from 'node:test';
 import { authenticate, checkoutToken } from '../src/auth.js';
-import { bytesToBase64, encryptJson } from '../src/crypto.js';
+import { bytesToBase64, encryptJson, rsaSign } from '../src/crypto.js';
 import worker from '../src/index.js';
 import { integrationSkill } from '../src/skill.js';
-import { type Client, type Env, type Order } from '../src/types.js';
+import { PaymentService } from '../src/service.js';
+import { HttpError, type Client, type Env, type Order, type WechatTransaction } from '../src/types.js';
 
 const origin = 'https://pay.bornforthis.cn';
 const repo = 'test-owner/index-fixture';
@@ -27,6 +28,15 @@ function environment(live = false): Env {
 }
 function context(): ExecutionContext { return { waitUntil() {} } as unknown as ExecutionContext; }
 function request(path: string, init?: RequestInit): Request { return new Request(origin + path, init); }
+function existingOrder(id:string,extra:Partial<Order>={}):Order {
+  const createdAt=new Date().toISOString();
+  return {version:1,id,clientId:client.id,clientName:client.name,merchantOrderId:'paused-existing',sku:'coin',quantity:1,description:client.products.coin.description,total:1,currency:'CNY',appId:'wx59aa532fbf6fa540',channel:'native',status:'PENDING',createdAt,expiresAt:new Date(Date.parse(createdAt)+300000).toISOString(),requestHash:'a'.repeat(64),delivery:null,...extra};
+}
+function signedProductRequest(path:string,method='GET'):Request {
+  const timestamp=String(Math.floor(Date.now()/1000)),nonce='fixture-paused-request-nonce';
+  const signature=createHmac('sha256',client.apiKey).update(`${method}\n${path}\n${timestamp}\n${nonce}\n\n`).digest('hex');
+  return request(path,{method,headers:{'X-Brclio-Client':client.id,'X-Brclio-Timestamp':timestamp,'X-Brclio-Nonce':nonce,'X-Brclio-Signature':signature}});
+}
 function denyNetwork(t: { mock: { method: (object: object, method: string, implementation: (...args: never[]) => unknown) => unknown } }) {
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async () => { calls++; throw new Error('Live network is forbidden in this test'); });
@@ -52,6 +62,75 @@ test('disabled payment routes reject before registry or provider access', async 
     assert.equal((await response.json() as { error: { code: string } }).error.code, 'PAYMENTS_DISABLED');
   }
   assert.equal(calls(), 0);
+});
+
+test('pausing live collection blocks new orders before authentication, registry, or provider access',async(t)=>{
+  const calls=denyNetwork(t),env={...environment(true),PAYMENT_ENABLED:'false'};
+  let creates=0;t.mock.method(PaymentService.prototype,'create',async()=>{creates++;throw Error('Creation must stay paused');});
+  const response=await worker.fetch(request('/api/v1/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),env,context());
+  assert.equal(response.status,503);assert.equal((await response.json() as {error:{code:string}}).error.code,'PAYMENTS_DISABLED');
+  assert.equal(creates,0);assert.equal(calls(),0);
+});
+
+test('paused live maintenance still rejects missing checkout/product/provider credentials before storage',async(t)=>{
+  const calls=denyNetwork(t),env={...environment(true),PAYMENT_ENABLED:'false'},id='1'.repeat(32);
+  for (const [path,method] of [[`/api/checkout/${id}`,'GET'],[`/api/checkout/${id}/refresh`,'POST'],[`/api/v1/orders/${id}`,'GET'],[`/api/v1/orders/${id}/refresh`,'POST'],['/api/wechat/notify','POST']]) {
+    const response=await worker.fetch(request(path,{method}),env,context());assert.equal(response.status,401);
+  }
+  assert.equal(calls(),0);
+});
+
+test('authenticated checkout and product order reads and refresh remain available during a live collection pause',async(t)=>{
+  const env={...environment(true),PAYMENT_ENABLED:'false'},id='2'.repeat(32),order=existingOrder(id);
+  let reads=0,refreshes=0;
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=new URL(String(input));assert.equal(url.origin,'https://api.github.com');assert.equal(init?.method,'GET');assert.equal(url.pathname,`/repos/${repo}/contents/config/clients.json`);
+    return new Response(null,{status:404});
+  });
+  t.mock.method(PaymentService.prototype,'read',async(requestedId:string)=>{assert.equal(requestedId,id);reads++;return order;});
+  t.mock.method(PaymentService.prototype,'refresh',async(requestedId:string)=>{assert.equal(requestedId,id);refreshes++;return {...order,status:'CLOSED',closeReason:'timeout'} as Order;});
+  const bearer={Authorization:'Bearer '+await checkoutToken(id,env)};
+  const requests=[request(`/api/checkout/${id}`,{headers:bearer}),request(`/api/checkout/${id}/refresh`,{method:'POST',headers:bearer}),signedProductRequest(`/api/v1/orders/${id}`),signedProductRequest(`/api/v1/orders/${id}/refresh`,'POST')];
+  for (let index=0;index<requests.length;index++) {
+    const response=await worker.fetch(requests[index],env,context());assert.equal(response.status,200);
+    const result=await response.json() as {id:string;status:string};assert.equal(result.id,id);assert.equal(result.status,index%2?'CLOSED':'PENDING');
+  }
+  assert.equal(reads,3);assert.equal(refreshes,2);
+});
+
+test('a signed encrypted WeChat payment notification persists before acknowledgement during a live collection pause',async(t)=>{
+  const env={...environment(true),PAYMENT_ENABLED:'false'},id='3'.repeat(32),paid=existingOrder(id,{status:'SUCCESS',transactionId:'420000000000000000000003',paidAt:new Date().toISOString(),delivery:{status:'pending',attempts:0,nextAt:new Date().toISOString()}});
+  const transaction:WechatTransaction={appid:paid.appId,mchid:env.WECHAT_MCH_ID!,out_trade_no:id,trade_state:'SUCCESS',transaction_id:paid.transactionId,success_time:paid.paidAt,amount:{total:paid.total,currency:'CNY'}};
+  const encoder=new TextEncoder(),nonce='0123456789ab',associatedData='fixture-notification';
+  const key=await crypto.subtle.importKey('raw',encoder.encode(env.WECHAT_API_V3_KEY!),'AES-GCM',false,['encrypt']);
+  const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv:encoder.encode(nonce),additionalData:encoder.encode(associatedData)},key,encoder.encode(JSON.stringify(transaction)));
+  const raw=JSON.stringify({event_type:'TRANSACTION.SUCCESS',resource_type:'encrypt-resource',resource:{algorithm:'AEAD_AES_256_GCM',original_type:'transaction',ciphertext:bytesToBase64(new Uint8Array(encrypted)),nonce,associated_data:associatedData}});
+  const timestamp=String(Math.floor(Date.now()/1000)),signatureNonce='fixture-callback-nonce';
+  const signature=await rsaSign(keyPair.privateKey,`${timestamp}\n${signatureNonce}\n${raw}\n`);
+  let persisted=false,delivered=0,failPersistence=false;const pending:Promise<unknown>[]=[];
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=new URL(String(input));assert.equal(url.origin,'https://api.github.com');assert.equal(init?.method,'GET');assert.equal(url.pathname,`/repos/${repo}/contents/config/clients.json`);
+    return new Response(null,{status:404});
+  });
+  t.mock.method(PaymentService.prototype,'applyTransaction',async(value:WechatTransaction)=>{assert.deepEqual(value,transaction);if(failPersistence)throw new HttpError(503,'STORAGE_UNAVAILABLE','Fixture storage unavailable');await Promise.resolve();persisted=true;return paid;});
+  t.mock.method(PaymentService.prototype,'deliver',async(requestedId:string)=>{assert.equal(requestedId,id);assert.equal(persisted,true);delivered++;return paid;});
+  const headers={'Content-Type':'application/json','Wechatpay-Timestamp':timestamp,'Wechatpay-Nonce':signatureNonce,'Wechatpay-Serial':'PUB_KEY_ID_00000000000000000000000000000001','Wechatpay-Signature':signature};
+  const response=await worker.fetch(request('/api/wechat/notify',{method:'POST',headers,body:raw}),env,{waitUntil:(work:Promise<unknown>)=>pending.push(work)} as unknown as ExecutionContext);
+  assert.equal(response.status,204);assert.equal(persisted,true);await Promise.all(pending);assert.equal(delivered,1);
+  failPersistence=true;persisted=false;t.mock.method(console,'error',()=>{});
+  const failed=await worker.fetch(request('/api/wechat/notify',{method:'POST',headers,body:raw}),env,context());
+  assert.equal(failed.status,503);assert.equal(persisted,false);assert.equal(delivered,1);
+});
+
+test('paused live scheduled reconciliation still runs while demo scheduling remains inert',async(t)=>{
+  const live={...environment(true),PAYMENT_ENABLED:'false'};let runs=0;
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=new URL(String(input));assert.equal(url.origin,'https://api.github.com');assert.equal(init?.method,'GET');assert.equal(url.pathname,`/repos/${repo}/contents/config/clients.json`);
+    return new Response(null,{status:404});
+  });
+  t.mock.method(PaymentService.prototype,'processWork',async(scheduledTime:number)=>{assert.equal(scheduledTime,123456);runs++;return {processed:1,failed:0};});
+  await worker.scheduled({scheduledTime:123456} as ScheduledController,live,context());assert.equal(runs,1);
+  await worker.scheduled({scheduledTime:123456} as ScheduledController,{...live,PAYMENT_MODE:'demo'},context());assert.equal(runs,1);
 });
 
 test('unknown live API routes and missing product authentication reject without GitHub access', async (t) => {
@@ -192,4 +271,32 @@ test('copied SKILL supplies only product configuration and its LF signing contra
   const badHeaders = new Headers(signed.headers);
   badHeaders.set('X-Brclio-Signature', wrongSignature);
   await assert.rejects(authenticate(new Request(signed.url, { method: 'POST', headers: badHeaders }), body, environment(true)));
+});
+
+test('checkout GET enforces the five-minute expiry even while its pending snapshot remains cached', async (t) => {
+  const env=environment(true),id='e'.repeat(32),now=Date.now();
+  let clock=now+299000,refreshes=0,reads=0;
+  const order:Order={version:1,id,clientId:client.id,clientName:client.name,merchantOrderId:'expiry-http',sku:'coin',quantity:1,description:'过期订单',total:1,currency:'CNY',appId:env.WECHAT_APP_ID!,channel:'native',status:'PENDING',createdAt:new Date(now).toISOString(),expiresAt:new Date(now+900000).toISOString(),payment:{channel:'native',codeUrl:'weixin://wxpay/bizpayurl?pr=fixture'},requestHash:'a'.repeat(64),delivery:null};
+  t.mock.method(Date,'now',()=>clock);
+  t.mock.method(PaymentService.prototype,'refresh',async function (requestedId:string) {
+    assert.equal(requestedId,id);refreshes++;
+    return {...order,status:'CLOSED',closedAt:new Date(clock).toISOString(),closeReason:'timeout'} as Order;
+  });
+  t.mock.method(globalThis,'fetch',(async (input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=new URL(String(input));assert.equal(url.origin,'https://api.github.com');assert.equal(init?.method,'GET');
+    if(url.pathname===`/repos/${repo}/contents/config/clients.json`)return new Response(null,{status:404});
+    assert.equal(url.pathname,`/repos/${repo}/contents/orders/ee/${id}.json`);reads++;
+    const envelope=await encryptJson(storageKey,order,`${repo}:orders/ee/${id}.json`);
+    return Response.json({type:'file',encoding:'base64',sha:'f'.repeat(40),content:bytesToBase64(new TextEncoder().encode(JSON.stringify(envelope)))});
+  }) as typeof fetch);
+  const headers={Authorization:'Bearer '+await checkoutToken(id,env)};
+  const load=async()=>{
+    const response=await worker.fetch(request(`/api/checkout/${id}`,{headers}),env,context());
+    assert.equal(response.status,200);return response.json() as Promise<{status:string;payment?:unknown;expiresAt:string}>;
+  };
+  const pending=await load();assert.equal(pending.status,'PENDING');assert.ok(pending.payment);
+  assert.equal(pending.expiresAt,new Date(now+300000).toISOString());
+  clock=now+301000;
+  const expired=await load();assert.equal(expired.status,'CLOSED');assert.equal(expired.payment,undefined);
+  assert.equal(reads,1);assert.equal(refreshes,1);
 });

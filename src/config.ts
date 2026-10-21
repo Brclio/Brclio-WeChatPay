@@ -54,6 +54,8 @@ export function assertLive(env:Env,requireClients=true):void {
   } catch { throw new HttpError(503,'CONFIGURATION_INVALID','商户密钥或支付通道配置不正确'); }
   baseUrl(env); if (requireClients) clients(env);
 }
+/** Pausing new collections must still allow authenticated recovery of existing orders. */
+export function assertMaintenance(env:Env):void { assertLive({...env,PAYMENT_ENABLED:'true'},false); }
 export function appIdFor(env:Env,channel:Channel):string {
   const id=channel==='app'?env.WECHAT_APP_APP_ID:channel==='jsapi'?env.WECHAT_JSAPI_APP_ID:env.WECHAT_APP_ID;
   if (!id || !/^wx[a-zA-Z0-9]{16}$/.test(id)) throw new HttpError(503,'CHANNEL_NOT_CONFIGURED','该支付通道尚未配置关联 AppID');
